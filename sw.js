@@ -1,4 +1,4 @@
-const CACHE_NAME = "noschool-crm-v11";
+const CACHE_NAME = "noschool-crm-v12";
 const ASSETS = [
   "./",
   "./index.html",
@@ -25,6 +25,12 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
+  const url = new URL(event.request.url);
+  // КРИТИЧНО: кэшируем только свою статику (тот же origin, что и сайт).
+  // Запросы к Supabase (и вообще любой другой домен) идут напрямую в сеть,
+  // без кэша — иначе браузер мог показывать устаревшие данные из базы
+  // (например, «удалённого» ученика, который на самом деле уже удалён).
+  if (url.origin !== self.location.origin) return;
   if (event.request.method !== "GET") return;
   event.respondWith(
     caches.match(event.request).then((cached) => {
