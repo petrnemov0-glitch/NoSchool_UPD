@@ -483,7 +483,11 @@
     const password = document.getElementById("auth-password").value;
     if (!email || password.length < 6) { authSetError("Email обязателен, пароль — минимум 6 символов"); return; }
     const btn = document.getElementById("auth-submit"); btn.disabled = true;
-    const { data, error } = await sbClient.auth.signUp({ email, password });
+    const siteUrl = window.location.href.split("#")[0].split("?")[0];
+    const { data, error } = await sbClient.auth.signUp({
+      email, password,
+      options: { emailRedirectTo: siteUrl },
+    });
     if (error) { authSetError(error.message); btn.disabled = false; return; }
     if (!data.session) {
       state.authMode = "signin";
