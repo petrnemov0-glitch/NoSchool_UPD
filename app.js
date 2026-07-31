@@ -1194,36 +1194,49 @@
 
   /* ---------------------------------------------------------
      CONDUCT LESSON FLOW (main scenario)
+     Работает ТОЛЬКО с уже существующими запланированными занятиями —
+     сначала занятие создаётся в расписании, а «Провести занятие»
+     лишь отмечает его результат. Ничего нового здесь не создаётся.
   --------------------------------------------------------- */
   window.openConductLesson = function (presetStudentId) {
-    state.conduct = { step: presetStudentId ? 2 : 1, studentId: presetStudentId || null, lessonId: null, status: null };
-    if (presetStudentId) prepareConductLesson(presetStudentId);
+    state.conduct = { step: 1, filterStudentId: presetStudentId || null, lessonId: null, studentId: null, status: null };
     renderConductModal();
   };
 
-  function prepareConductLesson(studentId) {
-    const today = todayISO();
-    const existing = state.lessons.find((l) => l.studentId === studentId && l.date === today && l.status === "planned");
-    state.conduct.studentId = studentId;
-    state.conduct.lessonId = existing ? existing.id : null;
-    state.conduct.date = existing ? existing.date : today;
-    state.conduct.time = existing ? existing.time : nowHHMM();
+  function plannedLessonsFor(studentId) {
+    return state.lessons
+      .filter((l) => l.status === "planned" && (!studentId || l.studentId === studentId))
+      .sort((a, b) => combineTS(a.date, a.time) - combineTS(b.date, b.time));
   }
 
   function renderConductModal() {
     const c = state.conduct;
     if (c.step === 1) {
-      if (!state.students.length) {
-        openModal(`<div class="modal-header"><h2>Провести занятие</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
-          ${emptyBlock("👨‍🎓", "Сначала добавьте ученика", "Раздел «Ученики» → «+ Добавить»")}`);
+      const list = plannedLessonsFor(c.filterStudentId);
+      const scopedStudent = c.filterStudentId ? getStudent(c.filterStudentId) : null;
+      if (!list.length) {
+        openModal(`
+          <div class="modal-header"><h2>Провести занятие</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+          ${emptyBlock("🗓️", "Нет запланированных занятий", scopedStudent ? "У этого ученика нет занятий в расписании" : "Сначала добавьте занятие в разделе «Расписание»")}
+          <button class="btn btn-primary" onclick="closeModal(); goTo('schedule')">Перейти в расписание</button>
+        `);
         return;
       }
       openModal(`
-        <div class="modal-header"><h2>Выберите ученика</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
-        <input class="search-input" id="c-search" placeholder="Поиск…" oninput="conductFilterStudents(this.value)" />
-        <div id="c-student-list">${conductStudentListHTML("")}</div>
+        <div class="modal-header"><h2>${scopedStudent ? "Занятия " + escapeHTML(scopedStudent.name) : "Выберите занятие"}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+        <div class="small muted" style="margin-bottom:10px">Выберите запланированное занятие, чтобы отметить его результат</div>
+        ${list.map((l) => {
+          const st = getStudent(l.studentId);
+          return `<div class="lesson-row row-tap" onclick="conductPickLesson('${l.id}')">
+            <div class="lt">${l.time}</div>
+            <div class="lm">
+              <div class="lname">${escapeHTML(st ? st.name : "Ученик удалён")}</div>
+              <div class="lsub">${humanDate(l.date)} · ${money(l.price)}</div>
+            </div>
+            <span class="chev">›</span>
+          </div>`;
+        }).join("")}
       `);
-      setTimeout(() => document.getElementById("c-search")?.focus(), 50);
       return;
     }
     if (c.step === 2) {
@@ -1237,6 +1250,7 @@
           <button class="option-card" onclick="conductSetStatus('cancelled')"><span class="ico">🚫</span>Отменено</button>
           <button class="option-card" onclick="conductSetStatus('moved')"><span class="ico">🔁</span>Перенос</button>
         </div>
+        <button class="btn btn-ghost" style="width:100%;margin-top:8px" onclick="state.conduct.step=1; renderConductModal()">← К списку занятий</button>
       `);
       return;
     }
@@ -1277,25 +1291,13 @@
     }
   }
 
-  function conductStudentListHTML(query) {
-    const q = query.trim().toLowerCase();
-    const list = state.students.filter((s) => s.name.toLowerCase().includes(q));
-    if (!list.length) return emptyBlock("🔍", "Никого не нашли", "Попробуйте другой запрос");
-    return list.map((s) => `
-      <div class="row row-tap" onclick="conductPickStudent('${s.id}')">
-        <div class="avatar">${initials(s.name)}</div>
-        <div class="row-main">
-          <div class="row-title">${escapeHTML(s.name)}</div>
-          <div class="row-sub">${escapeHTML(s.grade || "—")} · ${money(s.price)}</div>
-        </div>
-        <span class="chev">›</span>
-      </div>`).join("");
-  }
-  window.conductFilterStudents = function (v) {
-    document.getElementById("c-student-list").innerHTML = conductStudentListHTML(v);
-  };
-  window.conductPickStudent = function (id) {
-    prepareConductLesson(id);
+  window.conductPickLesson = function (lessonId) {
+    const l = state.lessons.find((x) => x.id === lessonId);
+    if (!l) return;
+    state.conduct.lessonId = l.id;
+    state.conduct.studentId = l.studentId;
+    state.conduct.date = l.date;
+    state.conduct.time = l.time;
     state.conduct.step = 2;
     renderConductModal();
   };
@@ -1361,6 +1363,12 @@
     sbClient.auth.onAuthStateChange((event, session) => {
       state.session = session;
       if (event === "PASSWORD_RECOVERY") { state.authMode = "reset"; render(); return; }
+      // Токен обновился в фоне (например, при переключении вкладок) — сессия
+      // остаётся той же самой, данные не устарели, перезагружать их и
+      // перерисовывать экран не нужно. Раньше это происходило при каждой
+      // такой фоновой проверке, из-за чего экран иногда «откатывался»
+      // при обычной навигации между разделами.
+      if (event === "TOKEN_REFRESHED") { return; }
       // Важно: НЕ делать supabase-запросы напрямую внутри этого колбэка —
       // это может подвесить внутреннюю блокировку авторизации в supabase-js.
       // Поэтому выносим дальнейшую загрузку данных за пределы колбэка.
