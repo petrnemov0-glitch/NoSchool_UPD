@@ -130,7 +130,25 @@
   // Загружает профиль (имя + фото) — общий для всех ролей.
   async function fetchProfile() {
     const { data } = await sbClient.from("user_profiles").select("*").eq("user_id", state.session.user.id).maybeSingle();
-    state.profile = { fullName: data?.full_name || "", avatarUrl: data?.avatar_url || "" };
+    state.profile = {
+      fullName: data?.full_name || "",
+      lastName: data?.last_name || "",
+      avatarUrl: data?.avatar_url || "",
+      notifyPrefs: data?.notify_prefs || { lesson_reminder: true, payment_due: true, reschedule: true },
+    };
+  }
+
+  async function saveProfileRow(patch) {
+    const { error } = await sbClient.from("user_profiles").upsert({
+      user_id: state.session.user.id,
+      full_name: state.profile.fullName || null,
+      last_name: state.profile.lastName || null,
+      avatar_url: state.profile.avatarUrl || null,
+      notify_prefs: state.profile.notifyPrefs,
+      updated_at: new Date().toISOString(),
+      ...patch,
+    });
+    return !error ? true : (console.error(error), false);
   }
 
   // Определяет роль текущего пользователя (репетитор/родитель/ученик) и
@@ -757,19 +775,24 @@
           <div class="profile-avatar-lg" style="${url ? `background-image:url('${url}');background-size:cover;background-position:center;` : ""}">
             ${url ? "" : escapeHTML(profileInitial())}
           </div>
-          <div class="small" style="text-align:center;color:var(--accent);margin-top:8px;font-weight:600">Изменить фото</div>
+          <div class="small" style="text-align:center;color:var(--accent-ink);margin-top:8px;font-weight:600">Изменить фото</div>
         </label>
         <input type="file" id="avatar-input" accept="image/*" style="display:none" onchange="onAvatarSelected(this)" />
       </div>
-      <div class="field"><label>Имя</label><input type="text" id="profile-name" value="${escapeHTML(state.profile.fullName || "")}" placeholder="Ваше имя" /></div>
-      <div class="small muted" style="margin-bottom:14px">${escapeHTML(state.session?.user?.email || "")} · ${roleLabel}</div>
+      <div class="field-row">
+        <div class="field"><label>Имя</label><input type="text" id="profile-name" value="${escapeHTML(state.profile.fullName || "")}" placeholder="Имя" /></div>
+        <div class="field"><label>Фамилия</label><input type="text" id="profile-lastname" value="${escapeHTML(state.profile.lastName || "")}" placeholder="Фамилия" /></div>
+      </div>
+      <div class="field"><label>Логин</label><input type="text" value="${escapeHTML(state.session?.user?.email || "")}" disabled style="opacity:0.6" /></div>
+      <div class="small muted" style="margin-bottom:14px">Роль: ${roleLabel}</div>
       <button class="btn btn-primary" onclick="saveProfileInfo()">Сохранить</button>
 
       <div class="card-title section-gap">Сменить пароль</div>
       <div class="field"><input type="password" id="profile-new-password" placeholder="Новый пароль, минимум 6 символов" /></div>
       <button class="btn btn-secondary" onclick="changePasswordFromProfile()">Обновить пароль</button>
 
-      <button class="link-danger" style="display:block;margin:18px auto 0" onclick="closeModal(); authSignOut()">Выйти из аккаунта</button>
+      <button class="btn btn-ghost" style="width:100%;margin-top:16px" onclick="closeModal(); openSettings()">⚙️ Настройки</button>
+      <button class="link-danger" style="display:block;margin:10px auto 0" onclick="closeModal(); authSignOut()">Выйти из аккаунта</button>
     `);
   };
 
@@ -783,25 +806,19 @@
     if (upErr) { console.error(upErr); showToast("Не удалось загрузить фото"); return; }
     const { data: pub } = sbClient.storage.from("avatars").getPublicUrl(path);
     const avatarUrl = pub.publicUrl + "?t=" + Date.now();
-    const { error: saveErr } = await sbClient.from("user_profiles").upsert({
-      user_id: state.session.user.id, avatar_url: avatarUrl,
-      full_name: state.profile.fullName || null, updated_at: new Date().toISOString(),
-    });
-    if (saveErr) { console.error(saveErr); showToast("Фото загружено, но не сохранилось в профиле"); return; }
     state.profile.avatarUrl = avatarUrl;
+    const ok = await saveProfileRow({ avatar_url: avatarUrl });
+    if (!ok) { showToast("Фото загружено, но не сохранилось в профиле"); return; }
     showToast("Фото обновлено");
     closeModal();
     render();
   };
 
   window.saveProfileInfo = async function () {
-    const name = document.getElementById("profile-name").value.trim();
-    const { error } = await sbClient.from("user_profiles").upsert({
-      user_id: state.session.user.id, full_name: name,
-      avatar_url: state.profile.avatarUrl || null, updated_at: new Date().toISOString(),
-    });
-    if (error) { console.error(error); showToast("Не удалось сохранить"); return; }
-    state.profile.fullName = name;
+    state.profile.fullName = document.getElementById("profile-name").value.trim();
+    state.profile.lastName = document.getElementById("profile-lastname").value.trim();
+    const ok = await saveProfileRow({});
+    if (!ok) { showToast("Не удалось сохранить"); return; }
     showToast("Профиль обновлён");
     closeModal();
     render();
@@ -814,6 +831,97 @@
     if (error) { showToast(error.message); return; }
     showToast("Пароль обновлён");
     closeModal();
+  };
+
+  /* ---------------------------------------------------------
+     SETTINGS (доступны из профиля, общие для всех ролей;
+     «О себе» — только у репетитора)
+  --------------------------------------------------------- */
+  window.openSettings = async function () {
+    let bioSection = "";
+    if (state.role === "tutor") {
+      if (!state.tutorBio) {
+        const { data } = await sbClient.from("tutors").select("description, subjects").limit(1).maybeSingle();
+        state.tutorBio = { description: data?.description || "", subjects: (data?.subjects || []).join(", ") };
+      }
+      bioSection = `
+        <div class="card-title">О себе (видно родителям и ученикам)</div>
+        <div class="field"><label>Описание</label><textarea id="settings-bio" placeholder="Коротко о себе, опыте, подходе к занятиям">${escapeHTML(state.tutorBio.description)}</textarea></div>
+        <div class="field"><label>Предметы (через запятую)</label><input type="text" id="settings-subjects" value="${escapeHTML(state.tutorBio.subjects)}" placeholder="Математика, физика" /></div>
+        <button class="btn btn-secondary" onclick="saveTutorBio()">Сохранить «О себе»</button>
+      `;
+    }
+    const np = state.profile.notifyPrefs || {};
+    openModal(`
+      <div class="modal-header"><h2>Настройки</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+      ${bioSection}
+      <div class="card-title section-gap">Уведомления</div>
+      <div class="toggle-row">
+        <span class="label">Напоминания о занятиях</span>
+        <button class="switch ${np.lesson_reminder ? "on" : ""}" id="notif-lesson" onclick="this.classList.toggle('on')"></button>
+      </div>
+      <div class="toggle-row">
+        <span class="label">Об оплате</span>
+        <button class="switch ${np.payment_due ? "on" : ""}" id="notif-payment" onclick="this.classList.toggle('on')"></button>
+      </div>
+      <div class="toggle-row">
+        <span class="label">О переносах и отменах</span>
+        <button class="switch ${np.reschedule ? "on" : ""}" id="notif-reschedule" onclick="this.classList.toggle('on')"></button>
+      </div>
+      <div class="small muted" style="margin-top:6px">Сама доставка уведомлений появится на следующем этапе — сейчас здесь сохраняются ваши предпочтения заранее.</div>
+      <button class="btn btn-primary" style="margin-top:14px" onclick="saveNotifyPrefs()">Сохранить настройки</button>
+    `);
+  };
+
+  window.saveTutorBio = async function () {
+    const description = document.getElementById("settings-bio").value.trim();
+    const subjects = document.getElementById("settings-subjects").value.split(",").map((s) => s.trim()).filter(Boolean);
+    const { error } = await sbClient.from("tutors").update({ description, subjects }).eq("user_id", state.session.user.id);
+    if (error) { console.error(error); showToast("Не удалось сохранить"); return; }
+    state.tutorBio = { description, subjects: subjects.join(", ") };
+    showToast("Сохранено");
+  };
+
+  window.saveNotifyPrefs = async function () {
+    state.profile.notifyPrefs = {
+      lesson_reminder: document.getElementById("notif-lesson").classList.contains("on"),
+      payment_due: document.getElementById("notif-payment").classList.contains("on"),
+      reschedule: document.getElementById("notif-reschedule").classList.contains("on"),
+    };
+    const ok = await saveProfileRow({});
+    if (!ok) { showToast("Не удалось сохранить"); return; }
+    showToast("Настройки сохранены");
+    closeModal();
+  };
+
+  /* ---------------------------------------------------------
+     «МОЙ РЕПЕТИТОР» (для родителя и ученика)
+  --------------------------------------------------------- */
+  async function fetchMyTutorInfo() {
+    const tutorRes = await sbClient.from("tutors").select("user_id, description, subjects").limit(1);
+    const t = (tutorRes.data || [])[0];
+    if (!t) { state.myTutor = null; return; }
+    const profRes = await sbClient.from("user_profiles").select("full_name, last_name, avatar_url").eq("user_id", t.user_id).maybeSingle();
+    const name = [profRes.data?.full_name, profRes.data?.last_name].filter(Boolean).join(" ") || "Репетитор";
+    state.myTutor = {
+      name, avatarUrl: profRes.data?.avatar_url || "",
+      description: t.description || "", subjects: t.subjects || [],
+    };
+  }
+
+  window.openMyTutorModal = async function () {
+    if (!state.myTutor) await fetchMyTutorInfo();
+    const t = state.myTutor;
+    if (!t) { showToast("Информация о репетиторе пока недоступна"); return; }
+    openModal(`
+      <div class="modal-header"><h2>Мой репетитор</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+      <div style="display:flex;flex-direction:column;align-items:center;margin-bottom:16px">
+        <div class="profile-avatar-lg" style="${t.avatarUrl ? `background-image:url('${t.avatarUrl}');background-size:cover;background-position:center;` : ""}">${t.avatarUrl ? "" : escapeHTML((t.name[0] || "?").toUpperCase())}</div>
+        <div style="font-weight:700;font-size:18px;margin-top:10px">${escapeHTML(t.name)}</div>
+        ${t.subjects.length ? `<div class="small muted" style="margin-top:2px">${t.subjects.map(escapeHTML).join(" · ")}</div>` : ""}
+      </div>
+      ${t.description ? `<div class="small" style="line-height:1.5">${escapeHTML(t.description)}</div>` : `<div class="small muted">Репетитор ещё не заполнил информацию о себе</div>`}
+    `);
   };
 
   const NAV_ITEMS = [
@@ -1606,6 +1714,7 @@
         </div>
       </div>
       <div class="view">
+        ${kids.length > 0 ? `<button class="pill-tab" style="margin-bottom:14px" onclick="openMyTutorModal()">👤 Мой репетитор</button>` : ""}
         ${kids.length === 0 ? `
           <div class="card">
             <div class="card-title">Добавить ребёнка</div>
@@ -1698,6 +1807,7 @@
     const homeworks = lessons.filter((l) => l.homework && l.homework.trim());
 
     return `${header}<div class="view">
+      <button class="pill-tab" style="margin-bottom:14px" onclick="openMyTutorModal()">👤 Мой репетитор</button>
       ${upcoming ? `
         <div class="hero">
           <div class="hero-label">Ближайшее занятие</div>

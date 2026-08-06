@@ -1,21 +1,24 @@
 /* ===========================================================
    NoSchool CRM — design tokens
-   Premium, minimal, "Apple-like" system aesthetic.
+   Фирменный стиль «НЕ Школа»: современный минимализм
+   (Apple / Linear / Notion), premium SaaS-ощущение.
    =========================================================== */
 
 :root {
-  --bg: #F5F5F7;
+  --bg: #FFFFFF;
   --surface: #FFFFFF;
-  --surface-2: #FBFBFC;
-  --ink: #1D1D1F;
-  --muted: #6E6E73;
-  --muted-2: #AEAEB2;
-  --line: rgba(0, 0, 0, 0.07);
-  --line-strong: rgba(0, 0, 0, 0.12);
+  --surface-2: #F8FAFA;
+  --ink: #1F2937;
+  --muted: #6B7280;
+  --muted-2: #9CA3AF;
+  --line: #E5E7EB;
+  --line-strong: #D6DBE1;
 
-  --accent: #4F46E5;
-  --accent-ink: #3730C4;
-  --accent-soft: #EEEDFD;
+  --accent: #2DDDDE;        /* Primary */
+  --accent-hover: #02C0BD;  /* Primary Hover */
+  --accent-ink: #0E8F95;    /* Primary Dark — используется для текста/тёмного края градиента */
+  --accent-2: #6BEBEC;      /* Accent — вторичный тон бренда */
+  --accent-soft: #E6FBFB;
 
   --success: #1F9254;
   --success-soft: #E6F6ED;
@@ -26,13 +29,13 @@
   --warning: #C77700;
   --warning-soft: #FFF2DF;
 
-  --radius-xl: 26px;
-  --radius-lg: 20px;
-  --radius-md: 14px;
-  --radius-sm: 10px;
+  --radius-xl: 28px;
+  --radius-lg: 24px;
+  --radius-md: 16px;
+  --radius-sm: 12px;
 
-  --shadow-card: 0 1px 1px rgba(0,0,0,0.02), 0 8px 20px rgba(0,0,0,0.05);
-  --shadow-pop: 0 12px 40px rgba(0,0,0,0.18);
+  --shadow-card: 0 1px 1px rgba(17,24,39,0.02), 0 6px 18px rgba(17,24,39,0.05);
+  --shadow-pop: 0 16px 44px rgba(17,24,39,0.16);
 
   --font-display: -apple-system, "SF Pro Display", "Inter", "Helvetica Neue", system-ui, sans-serif;
   --font-body: -apple-system, "SF Pro Text", "Inter", "Helvetica Neue", system-ui, sans-serif;
@@ -103,6 +106,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 /* ---------- Cards ---------- */
 .card {
   background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
   padding: 18px;
@@ -123,7 +127,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   color: #fff;
   border-radius: var(--radius-xl);
   padding: 22px 20px 20px;
-  box-shadow: 0 14px 30px rgba(79,70,229,0.28);
+  box-shadow: 0 14px 30px rgba(14,143,149,0.22);
   margin-bottom: 16px;
 }
 .hero .hero-label { font-size: 13px; opacity: 0.78; font-weight: 500; }
@@ -160,7 +164,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .quick-btn {
   display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
-  background: var(--surface); border: none; border-radius: var(--radius-lg);
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);
   padding: 16px; box-shadow: var(--shadow-card);
   font-size: 15px; font-weight: 600; color: var(--ink);
   transition: transform .12s ease;
@@ -171,7 +175,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   grid-column: 1 / -1;
   flex-direction: row; align-items: center; justify-content: center; gap: 10px;
   background: var(--accent); color: #fff; padding: 16px;
-  box-shadow: 0 10px 22px rgba(79,70,229,0.3);
+  box-shadow: 0 10px 22px rgba(14,143,149,0.24);
   font-size: 16px;
 }
 
@@ -358,14 +362,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .bar-chart .lbl { font-size: 10px; color: var(--muted); margin-top: 6px; }
 
 .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.stat-tile { background: var(--surface); border-radius: var(--radius-lg); padding: 14px; box-shadow: var(--shadow-card); }
+.stat-tile { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 14px; box-shadow: var(--shadow-card); }
 .stat-tile .v { font-family: var(--font-mono); font-size: 22px; font-weight: 700; }
 .stat-tile .l { font-size: 12px; color: var(--muted); margin-top: 3px; }
 
 /* Schedule */
 .week-strip { display: flex; gap: 6px; margin-bottom: 14px; }
 .week-day {
-  flex: 1; background: var(--surface); border: none; border-radius: var(--radius-md);
+  flex: 1; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md);
   padding: 8px 2px; text-align: center; box-shadow: var(--shadow-card);
 }
 .week-day .d { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; }
@@ -384,7 +388,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .lesson-row {
   display: flex; align-items: center; gap: 12px; background: var(--surface);
-  border-radius: var(--radius-md); padding: 12px 14px; margin-bottom: 8px;
+  border: 1px solid var(--line); border-radius: var(--radius-md); padding: 12px 14px; margin-bottom: 8px;
   box-shadow: var(--shadow-card);
 }
 .lesson-row .lt { font-family: var(--font-mono); font-weight: 700; font-size: 15px; min-width: 48px; }
