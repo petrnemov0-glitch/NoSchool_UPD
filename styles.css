@@ -404,3 +404,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   background: var(--surface); font-size: 13px; font-weight: 600; color: var(--muted);
 }
 .pill-tab.active { background: var(--ink); color: #fff; border-color: var(--ink); }
+
+/* Profile */
+.profile-btn {
+  width: 36px; height: 36px; border-radius: 50%; border: none;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; color: var(--accent-ink); font-size: 15px;
+  flex-shrink: 0; background: var(--accent-soft);
+}
+.profile-avatar-lg {
+  width: 88px; height: 88px; border-radius: 50%; margin: 0 auto;
+  background: var(--accent-soft); color: var(--accent-ink);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 32px; font-weight: 700;
+}

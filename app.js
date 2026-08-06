@@ -112,9 +112,31 @@
     state.parentLessons = lessonsData.map(lessonFromRow);
   }
 
-  // Определяет роль текущего пользователя (репетитор/родитель) и
+  // Загрузка данных для роли «ученик»: своя карточка и свои занятия.
+  async function dbFetchAllStudent() {
+    const mySeq = ++fetchSeq;
+    const meRes = await sbClient.from("students").select("*").eq("user_id", state.session.user.id).limit(1);
+    const me = (meRes.data || [])[0] || null;
+    let lessonsData = [];
+    if (me) {
+      const lessonsRes = await sbClient.from("lessons").select("*").eq("student_id", me.id);
+      lessonsData = lessonsRes.data || [];
+    }
+    if (mySeq !== fetchSeq) return;
+    state.studentSelf = me ? studentFromRow(me) : null;
+    state.studentLessons = lessonsData.map(lessonFromRow);
+  }
+
+  // Загружает профиль (имя + фото) — общий для всех ролей.
+  async function fetchProfile() {
+    const { data } = await sbClient.from("user_profiles").select("*").eq("user_id", state.session.user.id).maybeSingle();
+    state.profile = { fullName: data?.full_name || "", avatarUrl: data?.avatar_url || "" };
+  }
+
+  // Определяет роль текущего пользователя (репетитор/родитель/ученик) и
   // подгружает соответствующие данные. Безопасно вызывать повторно.
   async function loadForCurrentRole() {
+    await fetchProfile();
     const tutorRes = await sbClient.from("tutors").select("id").limit(1);
     if (tutorRes.data && tutorRes.data.length) {
       state.role = "tutor";
@@ -127,13 +149,47 @@
       await dbFetchAllParent();
       return;
     }
+    const studentRes = await sbClient.from("students").select("id").eq("user_id", state.session.user.id).limit(1);
+    if (studentRes.data && studentRes.data.length) {
+      state.role = "student";
+      await dbFetchAllStudent();
+      return;
+    }
+
+    // Никакая роль не найдена — вероятно, регистрация была прервана
+    // подтверждением почты до того, как выполнился бутстрап/привязка по
+    // коду. Догоняем это здесь же, после перехода по ссылке из письма.
+    const pendingRaw = localStorage.getItem("noschool_pending_signup");
+    if (pendingRaw) {
+      localStorage.removeItem("noschool_pending_signup");
+      try {
+        const pending = JSON.parse(pendingRaw);
+        if (pending.role === "parent" && pending.code) {
+          const { error } = await sbClient.rpc("link_parent_to_child", { p_code: pending.code });
+          if (error) showToast("Код не найден. Войдите и добавьте по коду вручную.");
+        } else if (pending.role === "student" && pending.code) {
+          const { error } = await sbClient.rpc("link_student_to_record", { p_code: pending.code });
+          if (error) showToast("Код не найден. Войдите и добавьте по коду вручную.");
+        } else {
+          await sbClient.rpc("bootstrap_individual_tutor");
+        }
+        const retryTutor = await sbClient.from("tutors").select("id").limit(1);
+        if (retryTutor.data && retryTutor.data.length) { state.role = "tutor"; await dbFetchAll(); return; }
+        const retryParent = await sbClient.from("parents").select("id").limit(1);
+        if (retryParent.data && retryParent.data.length) { state.role = "parent"; await dbFetchAllParent(); return; }
+        const retryStudent = await sbClient.from("students").select("id").eq("user_id", state.session.user.id).limit(1);
+        if (retryStudent.data && retryStudent.data.length) { state.role = "student"; await dbFetchAllStudent(); return; }
+      } catch (e) { console.error(e); }
+    }
     state.role = null; // ещё не настроено (не должно случаться в норме)
   }
 
   function resetAllState() {
     state.role = null;
+    state.profile = { fullName: "", avatarUrl: "" };
     state.students = []; state.lessons = []; state.expenses = [];
     state.parentChildren = []; state.parentLessons = [];
+    state.studentSelf = null; state.studentLessons = [];
   }
 
   // Защита от повторной отправки: если пользователь нажмёт «Сохранить»
@@ -197,13 +253,16 @@
   const state = {
     session: null,
     authMode: "signin",
-    authRole: "tutor", // выбор роли на экране регистрации: tutor | parent
-    role: null, // фактическая роль после входа: tutor | parent
+    authRole: "tutor", // выбор роли на экране регистрации: tutor | parent | student
+    role: null, // фактическая роль после входа: tutor | parent | student
+    profile: { fullName: "", avatarUrl: "" },
     students: [],
     lessons: [],
     expenses: [],
     parentChildren: [],
     parentLessons: [],
+    studentSelf: null,
+    studentLessons: [],
     view: "home",
     schedule: { mode: "week", weekStart: null, selectedDate: null },
     studentDetail: { id: null, tab: "history" },
@@ -470,6 +529,7 @@
     if (state.authMode === "reset") { app.innerHTML = renderResetScreen(); return; }
     if (!state.session) { app.innerHTML = renderAuthScreen(); return; }
     if (state.role === "parent") { app.innerHTML = renderParentApp(); return; }
+    if (state.role === "student") { app.innerHTML = renderStudentApp(); return; }
     if (state.role !== "tutor") {
       app.innerHTML = `<div style="min-height:100vh;display:flex;align-items:center;justify-content:center"><div class="muted">Загрузка…</div></div>`;
       return;
@@ -501,13 +561,14 @@
           </div>
           ${mode === "signup" ? `
             <div class="segmented" style="margin-bottom:14px">
-              <button class="${role === "tutor" ? "active" : ""}" onclick="authSetRole('tutor')">Я репетитор</button>
-              <button class="${role === "parent" ? "active" : ""}" onclick="authSetRole('parent')">Я родитель</button>
+              <button class="${role === "tutor" ? "active" : ""}" onclick="authSetRole('tutor')">Репетитор</button>
+              <button class="${role === "parent" ? "active" : ""}" onclick="authSetRole('parent')">Родитель</button>
+              <button class="${role === "student" ? "active" : ""}" onclick="authSetRole('student')">Ученик</button>
             </div>
           ` : ""}
           <div class="field"><label>Email</label><input type="text" id="auth-email" placeholder="you@example.com" autocomplete="username" /></div>
           <div class="field"><label>Пароль</label><input type="password" id="auth-password" placeholder="Минимум 6 символов" autocomplete="current-password" /></div>
-          ${mode === "signup" && role === "parent" ? `
+          ${mode === "signup" && (role === "parent" || role === "student") ? `
             <div class="field"><label>Код от репетитора</label><input type="text" id="auth-parent-code" placeholder="Например, a1b2c3" /></div>
           ` : ""}
           <div id="auth-error" class="small" style="min-height:18px;margin-bottom:6px;color:var(--danger)"></div>
@@ -549,9 +610,11 @@
     const password = document.getElementById("auth-password").value;
     if (!email || password.length < 6) { authSetError("Email обязателен, пароль — минимум 6 символов"); return; }
     const role = state.authRole;
-    const parentCode = role === "parent" ? document.getElementById("auth-parent-code").value.trim() : null;
-    if (role === "parent" && !parentCode) { authSetError("Введите код, который дал репетитор"); return; }
+    const needsCode = role === "parent" || role === "student";
+    const inviteCode = needsCode ? document.getElementById("auth-parent-code").value.trim() : null;
+    if (needsCode && !inviteCode) { authSetError("Введите код, который дал репетитор"); return; }
     const btn = document.getElementById("auth-submit"); btn.disabled = true;
+    localStorage.setItem("noschool_pending_signup", JSON.stringify({ role, code: inviteCode }));
     const siteUrl = window.location.href.split("#")[0].split("?")[0];
     const { data, error } = await sbClient.auth.signUp({
       email, password,
@@ -564,8 +627,12 @@
       authSetError("Проверьте почту и подтвердите регистрацию, затем войдите", true);
       return;
     }
+    localStorage.removeItem("noschool_pending_signup");
     if (role === "parent") {
-      const { error: linkErr } = await sbClient.rpc("link_parent_to_child", { p_code: parentCode });
+      const { error: linkErr } = await sbClient.rpc("link_parent_to_child", { p_code: inviteCode });
+      if (linkErr) { authSetError("Код не найден. Проверьте код у репетитора."); btn.disabled = false; return; }
+    } else if (role === "student") {
+      const { error: linkErr } = await sbClient.rpc("link_student_to_record", { p_code: inviteCode });
       if (linkErr) { authSetError("Код не найден. Проверьте код у репетитора."); btn.disabled = false; return; }
     } else {
       await sbClient.rpc("bootstrap_individual_tutor");
@@ -629,30 +696,125 @@
     if (state.view === "home") {
       const d = todayISO();
       return `<div class="topbar">
-        <div class="eyebrow">${weekdayFull(d)}, ${humanDate(d)}</div>
-        <h1>NoSchool</h1>
+        <div style="display:flex;align-items:flex-start;justify-content:space-between">
+          <div>
+            <div class="eyebrow">${weekdayFull(d)}, ${humanDate(d)}</div>
+            <h1>NoSchool</h1>
+          </div>
+          ${profileButtonHTML()}
+        </div>
       </div>`;
     }
     if (state.view === "studentDetail") {
       const st = getStudent(state.studentDetail.id);
       return `<div class="topbar">
-        <button class="back" onclick="goTo('students')">‹ Ученики</button>
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <button class="back" onclick="goTo('students')">‹ Ученики</button>
+          ${profileButtonHTML()}
+        </div>
         <h1>${escapeHTML(st ? st.name : "Ученик")}</h1>
       </div>`;
     }
     const title = TOPBAR_TITLES[state.view] || "";
     let action = "";
-    if (state.view === "students") action = `<button class="back" style="float:right;color:var(--ink)" onclick="openAddStudent()">+ Добавить</button>`;
-    if (state.view === "schedule") action = `<button class="back" style="float:right;color:var(--ink)" onclick="openAddLesson(state_scheduleDate())">+ Занятие</button>`;
-    if (state.view === "finances") action = `<button class="back" style="float:right;color:var(--ink)" onclick="openAddExpense()">+ Расход</button>`;
+    if (state.view === "students") action = `<button class="back" style="color:var(--ink)" onclick="openAddStudent()">+ Добавить</button>`;
+    if (state.view === "schedule") action = `<button class="back" style="color:var(--ink)" onclick="openAddLesson(state_scheduleDate())">+ Занятие</button>`;
+    if (state.view === "finances") action = `<button class="back" style="color:var(--ink)" onclick="openAddExpense()">+ Расход</button>`;
     return `<div class="topbar">
       <div style="display:flex;align-items:center;justify-content:space-between">
         <h1 style="margin:0">${title}</h1>
-        ${action}
+        <div style="display:flex;align-items:center;gap:10px">
+          ${action}
+          ${profileButtonHTML()}
+        </div>
       </div>
     </div>`;
   }
   window.state_scheduleDate = function () { ensureScheduleInit(); return state.schedule.selectedDate; };
+
+  /* ---------------------------------------------------------
+     PROFILE (общий для всех ролей: имя, фото, смена пароля)
+  --------------------------------------------------------- */
+  function profileInitial() {
+    const name = state.profile.fullName || state.session?.user?.email || "?";
+    return (name.trim()[0] || "?").toUpperCase();
+  }
+  function profileButtonHTML() {
+    const url = state.profile.avatarUrl;
+    const bg = url
+      ? `background-image:url('${url}');background-size:cover;background-position:center;`
+      : `background:var(--accent-soft);`;
+    return `<button class="profile-btn" style="${bg}" onclick="openProfileModal()" aria-label="Профиль">${url ? "" : escapeHTML(profileInitial())}</button>`;
+  }
+
+  window.openProfileModal = function () {
+    const roleLabel = { tutor: "Репетитор", parent: "Родитель", student: "Ученик" }[state.role] || "";
+    const url = state.profile.avatarUrl;
+    openModal(`
+      <div class="modal-header"><h2>Профиль</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+      <div style="display:flex;flex-direction:column;align-items:center;margin-bottom:18px">
+        <label for="avatar-input" style="cursor:pointer">
+          <div class="profile-avatar-lg" style="${url ? `background-image:url('${url}');background-size:cover;background-position:center;` : ""}">
+            ${url ? "" : escapeHTML(profileInitial())}
+          </div>
+          <div class="small" style="text-align:center;color:var(--accent);margin-top:8px;font-weight:600">Изменить фото</div>
+        </label>
+        <input type="file" id="avatar-input" accept="image/*" style="display:none" onchange="onAvatarSelected(this)" />
+      </div>
+      <div class="field"><label>Имя</label><input type="text" id="profile-name" value="${escapeHTML(state.profile.fullName || "")}" placeholder="Ваше имя" /></div>
+      <div class="small muted" style="margin-bottom:14px">${escapeHTML(state.session?.user?.email || "")} · ${roleLabel}</div>
+      <button class="btn btn-primary" onclick="saveProfileInfo()">Сохранить</button>
+
+      <div class="card-title section-gap">Сменить пароль</div>
+      <div class="field"><input type="password" id="profile-new-password" placeholder="Новый пароль, минимум 6 символов" /></div>
+      <button class="btn btn-secondary" onclick="changePasswordFromProfile()">Обновить пароль</button>
+
+      <button class="link-danger" style="display:block;margin:18px auto 0" onclick="closeModal(); authSignOut()">Выйти из аккаунта</button>
+    `);
+  };
+
+  window.onAvatarSelected = async function (input) {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    showToast("Загружаем фото…");
+    const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+    const path = `${state.session.user.id}/avatar.${ext}`;
+    const { error: upErr } = await sbClient.storage.from("avatars").upload(path, file, { upsert: true, cacheControl: "3600" });
+    if (upErr) { console.error(upErr); showToast("Не удалось загрузить фото"); return; }
+    const { data: pub } = sbClient.storage.from("avatars").getPublicUrl(path);
+    const avatarUrl = pub.publicUrl + "?t=" + Date.now();
+    const { error: saveErr } = await sbClient.from("user_profiles").upsert({
+      user_id: state.session.user.id, avatar_url: avatarUrl,
+      full_name: state.profile.fullName || null, updated_at: new Date().toISOString(),
+    });
+    if (saveErr) { console.error(saveErr); showToast("Фото загружено, но не сохранилось в профиле"); return; }
+    state.profile.avatarUrl = avatarUrl;
+    showToast("Фото обновлено");
+    closeModal();
+    render();
+  };
+
+  window.saveProfileInfo = async function () {
+    const name = document.getElementById("profile-name").value.trim();
+    const { error } = await sbClient.from("user_profiles").upsert({
+      user_id: state.session.user.id, full_name: name,
+      avatar_url: state.profile.avatarUrl || null, updated_at: new Date().toISOString(),
+    });
+    if (error) { console.error(error); showToast("Не удалось сохранить"); return; }
+    state.profile.fullName = name;
+    showToast("Профиль обновлён");
+    closeModal();
+    render();
+  };
+
+  window.changePasswordFromProfile = async function () {
+    const pw = document.getElementById("profile-new-password").value;
+    if (pw.length < 6) { showToast("Минимум 6 символов"); return; }
+    const { error } = await sbClient.auth.updateUser({ password: pw });
+    if (error) { showToast(error.message); return; }
+    showToast("Пароль обновлён");
+    closeModal();
+  };
 
   const NAV_ITEMS = [
     { id: "home", label: "Главная", ico: "🏠" },
@@ -726,9 +888,6 @@
         ${todays.length === 0 ? `<div class="empty"><div class="ico">📭</div><div class="t">Сегодня занятий нет</div><div class="s">Добавьте занятие в расписании</div></div>` :
         todays.map((l) => lessonRowHTML(l)).join("")}
       </div>
-
-      <div class="small muted" style="text-align:center;margin-top:16px">Вы вошли как ${escapeHTML(state.session?.user?.email || "")}</div>
-      <button class="link-danger" style="display:block;margin:0 auto" onclick="authSignOut()">Выйти из аккаунта</button>
     `;
   }
 
@@ -1440,7 +1599,12 @@
   function renderParentApp() {
     const kids = state.parentChildren;
     return `
-      <div class="topbar"><h1>Кабинет родителя</h1></div>
+      <div class="topbar">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <h1 style="margin:0">Кабинет родителя</h1>
+          ${profileButtonHTML()}
+        </div>
+      </div>
       <div class="view">
         ${kids.length === 0 ? `
           <div class="card">
@@ -1456,7 +1620,6 @@
             <div class="field"><input type="text" id="p-code" placeholder="Код от репетитора" /></div>
             <button class="btn btn-secondary" onclick="parentLinkChild()">Добавить</button>
           </div>` : ""}
-        <button class="link-danger" style="display:block;margin:16px auto" onclick="authSignOut()">Выйти из аккаунта</button>
       </div>`;
   }
 
@@ -1502,6 +1665,76 @@
     if (error) { showToast("Код не найден, проверьте у репетитора"); return; }
     await dbFetchAllParent();
     showToast("Ребёнок добавлен");
+    render();
+  };
+
+  /* ---------------------------------------------------------
+     STUDENT APP (роль «ученик») — только чтение
+  --------------------------------------------------------- */
+  function renderStudentApp() {
+    const st = state.studentSelf;
+    const header = `<div class="topbar">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <h1 style="margin:0">${st ? "Привет, " + escapeHTML((st.name || "").split(" ")[0] || "") + "!" : "Мой кабинет"}</h1>
+        ${profileButtonHTML()}
+      </div>
+    </div>`;
+
+    if (!st) {
+      return `${header}<div class="view">
+        <div class="card">
+          <div class="card-title">Привязать аккаунт</div>
+          <div class="small muted" style="margin-bottom:10px">Введите код, который дал репетитор</div>
+          <div class="field"><input type="text" id="s-code" placeholder="Например, a1b2c3" /></div>
+          <button class="btn btn-primary" onclick="studentLinkSelf()">Привязать</button>
+        </div>
+      </div>`;
+    }
+
+    const lessons = state.studentLessons.slice().sort((a, b) => combineTS(b.date, b.time) - combineTS(a.date, a.time));
+    const upcoming = lessons
+      .filter((l) => l.status === "planned" && combineTS(l.date, l.time) >= Date.now())
+      .sort((a, b) => combineTS(a.date, a.time) - combineTS(b.date, b.time))[0];
+    const homeworks = lessons.filter((l) => l.homework && l.homework.trim());
+
+    return `${header}<div class="view">
+      ${upcoming ? `
+        <div class="hero">
+          <div class="hero-label">Ближайшее занятие</div>
+          <div class="hero-amount" style="font-size:26px">${humanDate(upcoming.date)}, ${upcoming.time}</div>
+        </div>` : `<div class="card"><div class="small muted" style="padding:6px 0">Ближайших занятий не запланировано</div></div>`}
+
+      <div class="card-title section-gap">Домашние задания</div>
+      <div class="card" style="padding:6px 12px">
+        ${homeworks.length === 0 ? `<div class="small muted" style="padding:10px 0">Заданий пока нет</div>` :
+        homeworks.slice(0, 10).map((l) => `
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">${escapeHTML(l.homework)}</div>
+              <div class="row-sub">выдано ${humanDate(l.date)}</div>
+            </div>
+          </div>`).join("")}
+      </div>
+
+      <div class="card-title section-gap">История занятий</div>
+      <div class="card" style="padding:6px 12px">
+        ${lessons.length === 0 ? `<div class="small muted" style="padding:10px 0">Занятий пока нет</div>` :
+        lessons.slice(0, 15).map((l) => `
+          <div class="row">
+            <div class="row-main"><div class="row-title">${humanDate(l.date)} · ${l.time}</div></div>
+            <span class="badge ${STATUS_BADGE_CLASS[l.status]}">${STATUS_LABEL[l.status]}</span>
+          </div>`).join("")}
+      </div>
+    </div>`;
+  }
+
+  window.studentLinkSelf = async function () {
+    const code = document.getElementById("s-code").value.trim();
+    if (!code) { showToast("Введите код"); return; }
+    const { error } = await sbClient.rpc("link_student_to_record", { p_code: code });
+    if (error) { showToast("Код не найден, проверьте у репетитора"); return; }
+    await dbFetchAllStudent();
+    showToast("Готово!");
     render();
   };
 
