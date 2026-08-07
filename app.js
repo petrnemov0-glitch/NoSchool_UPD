@@ -155,19 +155,20 @@
   // подгружает соответствующие данные. Безопасно вызывать повторно.
   async function loadForCurrentRole() {
     await fetchProfile();
-    const tutorRes = await sbClient.from("tutors").select("id").limit(1);
+    const myId = state.session.user.id;
+    const tutorRes = await sbClient.from("tutors").select("id").eq("user_id", myId).limit(1);
     if (tutorRes.data && tutorRes.data.length) {
       state.role = "tutor";
       await dbFetchAll();
       return;
     }
-    const parentRes = await sbClient.from("parents").select("id").limit(1);
+    const parentRes = await sbClient.from("parents").select("id").eq("user_id", myId).limit(1);
     if (parentRes.data && parentRes.data.length) {
       state.role = "parent";
       await dbFetchAllParent();
       return;
     }
-    const studentRes = await sbClient.from("students").select("id").eq("user_id", state.session.user.id).limit(1);
+    const studentRes = await sbClient.from("students").select("id").eq("user_id", myId).limit(1);
     if (studentRes.data && studentRes.data.length) {
       state.role = "student";
       await dbFetchAllStudent();
@@ -191,11 +192,11 @@
         } else {
           await sbClient.rpc("bootstrap_individual_tutor");
         }
-        const retryTutor = await sbClient.from("tutors").select("id").limit(1);
+        const retryTutor = await sbClient.from("tutors").select("id").eq("user_id", myId).limit(1);
         if (retryTutor.data && retryTutor.data.length) { state.role = "tutor"; await dbFetchAll(); return; }
-        const retryParent = await sbClient.from("parents").select("id").limit(1);
+        const retryParent = await sbClient.from("parents").select("id").eq("user_id", myId).limit(1);
         if (retryParent.data && retryParent.data.length) { state.role = "parent"; await dbFetchAllParent(); return; }
-        const retryStudent = await sbClient.from("students").select("id").eq("user_id", state.session.user.id).limit(1);
+        const retryStudent = await sbClient.from("students").select("id").eq("user_id", myId).limit(1);
         if (retryStudent.data && retryStudent.data.length) { state.role = "student"; await dbFetchAllStudent(); return; }
       } catch (e) { console.error(e); }
     }
@@ -888,6 +889,14 @@
       </div>
       <div class="small muted" style="margin-top:6px">Сама доставка уведомлений появится на следующем этапе — сейчас здесь сохраняются ваши предпочтения заранее.</div>
       <button class="btn btn-primary" style="margin-top:14px" onclick="saveNotifyPrefs()">Сохранить настройки</button>
+
+      <div class="card-title section-gap" style="color:var(--danger)">Опасная зона</div>
+      <div class="small muted" style="margin-bottom:10px">
+        ${state.role === "tutor"
+          ? "Удаление аккаунта удалит вообще всё: всех учеников, все занятия и финансы. Восстановить будет нельзя."
+          : "Аккаунт и привязка к репетитору будут удалены безвозвратно."}
+      </div>
+      <button class="btn btn-danger" style="width:100%" onclick="deleteMyAccount()">Удалить аккаунт</button>
     `);
   };
 
@@ -898,6 +907,22 @@
     if (error) { console.error(error); showToast("Не удалось сохранить"); return; }
     state.tutorBio = { description, subjects: subjects.join(", ") };
     showToast("Сохранено");
+  };
+
+  window.deleteMyAccount = async function () {
+    const warning = state.role === "tutor"
+      ? "Вы репетитор — вместе с аккаунтом удалятся ВСЕ ваши ученики, занятия и финансы. Это необратимо."
+      : "Аккаунт и привязка к репетитору будут удалены безвозвратно.";
+    if (!confirm(`${warning}\n\nТочно удалить аккаунт?`)) return;
+    if (!confirm("Последнее подтверждение: аккаунт будет удалён без возможности восстановления. Продолжить?")) return;
+    const { error } = await sbClient.rpc("delete_own_account");
+    if (error) { console.error(error); showToast("Не удалось удалить аккаунт"); return; }
+    await sbClient.auth.signOut();
+    state.session = null;
+    resetAllState();
+    closeModal();
+    showToast("Аккаунт удалён");
+    render();
   };
 
   window.saveNotifyPrefs = async function () {

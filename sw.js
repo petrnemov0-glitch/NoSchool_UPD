@@ -1,4 +1,4 @@
-const CACHE_NAME = "noschool-crm-v17";
+const CACHE_NAME = "noschool-crm-v18";
 const ASSETS = [
   "./",
   "./index.html",
