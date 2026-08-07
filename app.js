@@ -43,6 +43,8 @@
       time: r.time ? r.time.slice(0, 5) : r.time,
       status: r.status, paid: r.paid, homework: r.homework, hwDone: r.hw_done,
       comment: r.comment, price: r.price, createdAt: r.created_at,
+      homeworkFileUrl: r.homework_file_url, submissionFileUrl: r.submission_file_url,
+      submissionComment: r.submission_comment,
     };
   }
   function lessonToRow(l) {
@@ -50,6 +52,8 @@
       student_id: l.studentId, date: l.date, time: l.time, status: l.status,
       paid: !!l.paid, homework: l.homework || "", hw_done: !!l.hwDone,
       comment: l.comment || "", price: l.price,
+      homework_file_url: l.homeworkFileUrl || null, submission_file_url: l.submissionFileUrl || null,
+      submission_comment: l.submissionComment || "",
     };
   }
   function expenseFromRow(r) {
@@ -252,6 +256,26 @@
   async function dbDeleteLesson(id) {
     const { error } = await sbClient.from("lessons").delete().eq("id", id);
     if (error) { console.error(error); showToast("Не удалось удалить занятие"); return false; }
+    return true;
+  }
+
+  // Загружает файл (ДЗ репетитора или решение ученика) в общий бакет
+  // lesson-files и возвращает публичную ссылку, либо null при ошибке.
+  async function uploadLessonFile(lessonId, kind, file) {
+    const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+    const path = `${lessonId}/${kind}-${Date.now()}.${ext}`;
+    const { error } = await sbClient.storage.from("lesson-files").upload(path, file, { upsert: true, cacheControl: "3600" });
+    if (error) { console.error(error); showToast("Не удалось загрузить файл"); return null; }
+    const { data: pub } = sbClient.storage.from("lesson-files").getPublicUrl(path);
+    return pub.publicUrl;
+  }
+
+  // Отчёт по занятию хранится отдельно от lessons — так его можно
+  // спрятать от ученика на уровне прав доступа (RLS), а не только в UI.
+  async function saveLessonReport(lessonId, text) {
+    const { error } = await sbClient.from("lesson_reports")
+      .upsert({ lesson_id: lessonId, what_covered: text }, { onConflict: "lesson_id" });
+    if (error) { console.error(error); showToast("Отчёт не сохранился"); return false; }
     return true;
   }
 
@@ -1563,12 +1587,17 @@
     if (!state.students.length) { showToast("Сначала добавьте ученика"); return; }
     renderLessonForm(null, dateISO);
   };
-  window.openEditLesson = function (id) {
-    renderLessonForm(state.lessons.find((l) => l.id === id));
+  window.openEditLesson = async function (id) {
+    await renderLessonForm(state.lessons.find((l) => l.id === id));
   };
 
-  function renderLessonForm(lesson, defaultDate) {
+  async function renderLessonForm(lesson, defaultDate) {
     const isEdit = !!lesson;
+    let reportText = "";
+    if (isEdit && lesson.status === "done") {
+      const { data } = await sbClient.from("lesson_reports").select("what_covered").eq("lesson_id", lesson.id).maybeSingle();
+      reportText = data?.what_covered || "";
+    }
     const studentOptions = state.students.map((s) => `<option value="${s.id}" ${lesson?.studentId === s.id ? "selected" : ""}>${escapeHTML(s.name)}</option>`).join("");
     openModal(`
       <div class="modal-header"><h2>${isEdit ? "Занятие" : "Новое занятие"}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
@@ -1589,6 +1618,14 @@
         </div>
       ` : ""}
       <div class="field"><label>Домашнее задание</label><textarea id="l-homework" placeholder="Необязательно">${escapeHTML(lesson?.homework || "")}</textarea></div>
+      <div class="field">
+        <label>Файл к домашнему заданию</label>
+        <input type="file" id="l-hw-file" accept="image/*,.pdf,.doc,.docx" />
+        ${lesson?.homeworkFileUrl ? `<div class="small" style="margin-top:6px"><a href="${lesson.homeworkFileUrl}" target="_blank" style="color:var(--accent-ink);font-weight:600">📎 Уже загружен файл</a></div>` : ""}
+      </div>
+      ${isEdit && lesson.status === "done" ? `
+        <div class="field"><label>Отчёт по занятию (видит только родитель)</label><textarea id="l-report" placeholder="Что изучали, успехи, ошибки, рекомендации">${escapeHTML(reportText)}</textarea></div>
+      ` : ""}
       <div class="field"><label>Комментарий</label><textarea id="l-comment" placeholder="Необязательно">${escapeHTML(lesson?.comment || "")}</textarea></div>
       <div class="btn-row">
         ${isEdit ? `<button class="btn btn-danger" onclick="deleteLesson('${lesson.id}')">Удалить</button>` : ""}
@@ -1605,8 +1642,12 @@
     const comment = document.getElementById("l-comment").value.trim();
     const student = getStudent(studentId);
     if (!student) { showToast("Выберите ученика"); return; }
+    const reportEl = document.getElementById("l-report");
+    const hwFile = document.getElementById("l-hw-file")?.files?.[0];
 
     await withGuard("saveLesson", async () => {
+    let homeworkFileUrl;
+    if (hwFile) homeworkFileUrl = await uploadLessonFile(id || "new-" + Date.now(), "homework", hwFile);
     if (id) {
       const l = state.lessons.find((x) => x.id === id);
       const statusEl = document.getElementById("l-status");
@@ -1615,15 +1656,18 @@
         ...l, studentId, date, time, homework, comment,
         status: statusEl ? statusEl.value : l.status,
         paid: paidEl ? paidEl.classList.contains("on") : l.paid,
+        homeworkFileUrl: homeworkFileUrl || l.homeworkFileUrl,
       };
       const ok = await dbUpdateLesson(id, merged);
       if (!ok) return;
       Object.assign(l, merged);
+      if (reportEl) await saveLessonReport(id, reportEl.value.trim());
       showToast("Занятие обновлено");
     } else {
       const created = await dbInsertLesson({
         studentId, date, time, homework, comment,
         status: "planned", paid: false, hwDone: false, price: student.price,
+        homeworkFileUrl,
       });
       if (!created) return;
       state.lessons.push(created);
@@ -1790,7 +1834,11 @@
             <button class="switch ${c.paid ? "on" : ""}" id="c-paid-switch" onclick="this.classList.toggle('on')"></button>
           </div>
           <div class="field"><label>Домашнее задание</label><textarea id="c-homework" placeholder="Необязательно"></textarea></div>
-          <div class="field"><label>Комментарий</label><textarea id="c-comment" placeholder="Необязательно"></textarea></div>`;
+          <div class="field">
+            <label>Файл к домашнему заданию</label>
+            <input type="file" id="c-hw-file" accept="image/*,.pdf,.doc,.docx" />
+          </div>
+          <div class="field"><label>Отчёт по занятию (видит только родитель)</label><textarea id="c-report" placeholder="Что изучали, успехи, ошибки, рекомендации"></textarea></div>`;
       } else if (c.status === "cancelled") {
         extra = `<div class="field"><label>Комментарий</label><textarea id="c-comment" placeholder="Причина отмены (необязательно)"></textarea></div>`;
       } else if (c.status === "moved") {
@@ -1837,6 +1885,7 @@
     const c = state.conduct;
     const student = getStudent(c.studentId);
     const comment = document.getElementById("c-comment")?.value.trim() || "";
+    const reportText = document.getElementById("c-report")?.value.trim() || "";
 
     let payload = { status: c.status, comment };
     if (c.status === "done") {
@@ -1844,6 +1893,11 @@
       payload.homework = document.getElementById("c-homework")?.value.trim() || "";
       payload.date = document.getElementById("c-done-date").value;
       payload.time = document.getElementById("c-done-time").value;
+      const hwFile = document.getElementById("c-hw-file")?.files?.[0];
+      if (hwFile) {
+        const url = await uploadLessonFile(c.lessonId, "homework", hwFile);
+        if (url) payload.homeworkFileUrl = url;
+      }
     } else if (c.status === "moved") {
       payload.date = document.getElementById("c-move-date").value;
       payload.time = document.getElementById("c-move-time").value;
@@ -1857,6 +1911,7 @@
       const ok = await dbUpdateLesson(c.lessonId, merged);
       if (!ok) return;
       Object.assign(l, merged);
+      if (c.status === "done") await saveLessonReport(c.lessonId, reportText);
     } else {
       const newData = {
         studentId: c.studentId,
@@ -1867,6 +1922,7 @@
       const created = await dbInsertLesson(newData);
       if (!created) return;
       state.lessons.push(created);
+      if (c.status === "done") await saveLessonReport(created.id, reportText);
     }
     closeModal();
     state.conduct = null;
@@ -1928,7 +1984,7 @@
           </div>` : ""}
         <div class="card-title section-gap">История занятий</div>
         ${lessons.length === 0 ? `<div class="small muted">Занятий пока нет</div>` : lessons.slice(0, 15).map((l) => `
-          <div class="row">
+          <div class="row row-tap" onclick="openParentLessonDetail('${l.id}')">
             <div class="row-main">
               <div class="row-title">${humanDate(l.date)} · ${l.time}</div>
               <div class="row-sub">${l.homework ? "ДЗ: " + escapeHTML(l.homework) : "&nbsp;"}</div>
@@ -1940,6 +1996,63 @@
           </div>`).join("")}
       </div>`;
   }
+
+  window.openParentLessonDetail = async function (lessonId) {
+    const l = state.parentLessons.find((x) => x.id === lessonId);
+    if (!l) return;
+    const st = state.parentChildren.find((s) => s.id === l.studentId);
+    let reportText = "";
+    if (l.status === "done") {
+      const { data } = await sbClient.from("lesson_reports").select("what_covered").eq("lesson_id", lessonId).maybeSingle();
+      reportText = data?.what_covered || "";
+    }
+    let paymentRow = null;
+    if (l.status === "done" && !l.paid) {
+      const { data } = await sbClient.from("payments").select("*").eq("lesson_id", lessonId).maybeSingle();
+      paymentRow = data || null;
+    }
+    openModal(`
+      <div class="modal-header"><h2>${humanDate(l.date)} · ${l.time}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+      <div class="small muted" style="margin-bottom:10px">${escapeHTML(st?.name || "")} · ${money(l.price)}</div>
+      <span class="badge ${STATUS_BADGE_CLASS[l.status]}">${STATUS_LABEL[l.status]}</span>
+      ${l.status === "done" ? `<span class="badge ${l.paid ? "success" : "danger"}" style="margin-left:6px">${l.paid ? "оплачено" : "не оплачено"}</span>` : ""}
+
+      ${l.homework ? `<div class="card-title section-gap">Домашнее задание</div><div class="small">${escapeHTML(l.homework)}</div>` : ""}
+      ${l.homeworkFileUrl ? `<div class="small" style="margin-top:6px"><a href="${l.homeworkFileUrl}" target="_blank" style="color:var(--accent-ink);font-weight:600">📎 Открыть файл от репетитора</a></div>` : ""}
+
+      ${l.status === "done" ? `<div class="card-title section-gap">Отчёт по занятию</div><div class="small">${reportText ? escapeHTML(reportText) : `<span class="muted">Репетитор ещё не заполнил отчёт</span>`}</div>` : ""}
+
+      ${l.status === "done" && !l.paid ? `
+        <div class="card-title section-gap">Подтверждение оплаты</div>
+        ${paymentRow?.proof_url ? `<div class="small" style="margin-bottom:4px"><a href="${paymentRow.proof_url}" target="_blank" style="color:var(--accent-ink);font-weight:600">📎 Уже загруженный скриншот</a></div>` : ""}
+        <div class="field"><label>Скриншот оплаты</label><input type="file" id="pf-file" accept="image/*" /></div>
+        <div class="field"><label>или ссылка на чек</label><input type="text" id="pf-link" placeholder="https://..." value="${escapeHTML(paymentRow?.proof_link || "")}" /></div>
+        <button class="btn btn-secondary" style="width:100%" onclick="submitPaymentProof('${l.id}', '${st.id}')">Отправить подтверждение</button>
+      ` : ""}
+    `);
+  };
+
+  window.submitPaymentProof = async function (lessonId, studentId) {
+    const fileInput = document.getElementById("pf-file");
+    const link = document.getElementById("pf-link").value.trim();
+    const file = fileInput?.files?.[0];
+    let proofUrl = null;
+    if (file) proofUrl = await uploadLessonFile(lessonId, "payment", file);
+    const l = state.parentLessons.find((x) => x.id === lessonId);
+    const { data: existing } = await sbClient.from("payments").select("id").eq("lesson_id", lessonId).maybeSingle();
+    const patch = { lesson_id: lessonId, student_id: studentId, amount: l?.price || 0, status: "awaiting" };
+    if (proofUrl) patch.proof_url = proofUrl;
+    if (link) patch.proof_link = link;
+    let error;
+    if (existing) {
+      ({ error } = await sbClient.from("payments").update(patch).eq("id", existing.id));
+    } else {
+      ({ error } = await sbClient.from("payments").insert(patch));
+    }
+    if (error) { console.error(error); showToast("Не удалось отправить"); return; }
+    showToast("Отправлено репетитору");
+    closeModal();
+  };
 
   window.parentLinkChild = async function () {
     const code = document.getElementById("p-code").value.trim();
@@ -1992,11 +2105,12 @@
       <div class="card" style="padding:6px 12px">
         ${homeworks.length === 0 ? `<div class="small muted" style="padding:10px 0">Заданий пока нет</div>` :
         homeworks.slice(0, 10).map((l) => `
-          <div class="row">
+          <div class="row row-tap" onclick="openStudentHomeworkDetail('${l.id}')">
             <div class="row-main">
               <div class="row-title">${escapeHTML(l.homework)}</div>
-              <div class="row-sub">выдано ${humanDate(l.date)}</div>
+              <div class="row-sub">выдано ${humanDate(l.date)}${l.submissionFileUrl ? " · решение загружено" : ""}</div>
             </div>
+            <span class="chev">›</span>
           </div>`).join("")}
       </div>
 
@@ -2011,6 +2125,44 @@
       </div>
     </div>`;
   }
+
+  window.openStudentHomeworkDetail = function (lessonId) {
+    const l = state.studentLessons.find((x) => x.id === lessonId);
+    if (!l) return;
+    openModal(`
+      <div class="modal-header"><h2>Домашнее задание</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+      <div class="small muted" style="margin-bottom:10px">выдано ${humanDate(l.date)}</div>
+      <div class="small">${escapeHTML(l.homework)}</div>
+      ${l.homeworkFileUrl ? `<div class="small" style="margin-top:8px"><a href="${l.homeworkFileUrl}" target="_blank" style="color:var(--accent-ink);font-weight:600">📎 Материалы от репетитора</a></div>` : ""}
+
+      <div class="card-title section-gap">Моё решение</div>
+      ${l.submissionFileUrl ? `<div class="small" style="margin-bottom:8px"><a href="${l.submissionFileUrl}" target="_blank" style="color:var(--accent-ink);font-weight:600">📎 Уже загруженный файл</a></div>` : ""}
+      <div class="field"><label>Файл или фото решения</label><input type="file" id="sub-file" accept="image/*,.pdf,.doc,.docx" /></div>
+      <div class="field"><label>Комментарий</label><textarea id="sub-comment" placeholder="Необязательно">${escapeHTML(l.submissionComment || "")}</textarea></div>
+      <button class="btn btn-primary" style="width:100%" onclick="submitHomework('${l.id}')">Отправить</button>
+    `);
+  };
+
+  window.submitHomework = async function (lessonId) {
+    const l = state.studentLessons.find((x) => x.id === lessonId);
+    if (!l) return;
+    const file = document.getElementById("sub-file")?.files?.[0];
+    const comment = document.getElementById("sub-comment").value.trim();
+    let submissionFileUrl = l.submissionFileUrl;
+    if (file) {
+      const url = await uploadLessonFile(lessonId, "submission", file);
+      if (url) submissionFileUrl = url;
+    }
+    const { error } = await sbClient.from("lessons").update({
+      submission_file_url: submissionFileUrl, submission_comment: comment,
+    }).eq("id", lessonId);
+    if (error) { console.error(error); showToast("Не удалось отправить"); return; }
+    l.submissionFileUrl = submissionFileUrl;
+    l.submissionComment = comment;
+    showToast("Решение отправлено репетитору");
+    closeModal();
+    render();
+  };
 
   window.studentLinkSelf = async function () {
     const code = document.getElementById("s-code").value.trim();
