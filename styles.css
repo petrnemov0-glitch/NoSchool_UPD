@@ -173,11 +173,28 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .quick-btn .ico { font-size: 22px; }
 .quick-btn.primary {
   grid-column: 1 / -1;
+  width: 100%;
   flex-direction: row; align-items: center; justify-content: center; gap: 10px;
   background: var(--accent); color: #fff; padding: 16px;
   box-shadow: 0 10px 22px rgba(14,143,149,0.24);
   font-size: 16px;
 }
+
+/* Section summary cards (главная страница) */
+.section-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;
+  margin-bottom: 16px;
+}
+.section-card {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);
+  padding: 16px; box-shadow: var(--shadow-card);
+  transition: transform .12s ease;
+}
+.section-card:active { transform: scale(0.97); }
+.section-card .ico { font-size: 20px; }
+.section-card .t { font-size: 13px; font-weight: 600; color: var(--muted); }
+.section-card .v { font-size: 17px; font-weight: 700; color: var(--ink); font-family: var(--font-mono); }
 
 /* ---------- List rows ---------- */
 .row {
@@ -379,8 +396,32 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .week-day.selected { background: var(--accent); }
 .week-day.selected .d, .week-day.selected .n { color: #fff; }
 .week-day.selected .dot { background: #fff; }
-.week-day.today .n { color: var(--accent); }
+.week-day.today .n { color: var(--accent-ink); }
 .week-day.selected.today .n { color: #fff; }
+
+/* Month calendar grid */
+.month-grid-labels {
+  display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px;
+  margin-bottom: 6px;
+}
+.month-grid-labels div {
+  text-align: center; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase;
+}
+.month-grid {
+  display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 18px;
+}
+.month-cell {
+  aspect-ratio: 1; border: 1px solid var(--line); background: var(--surface);
+  border-radius: var(--radius-sm); display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 2px;
+}
+.month-cell .n { font-size: 13px; font-weight: 600; color: var(--ink); }
+.month-cell .dot { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); }
+.month-cell.outside { opacity: 0.35; }
+.month-cell.today .n { color: var(--accent-ink); }
+.month-cell.selected { background: var(--accent); border-color: var(--accent); }
+.month-cell.selected .n { color: #fff; }
+.month-cell.selected .dot { background: #fff; }
 
 .day-group-title {
   font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase;

@@ -312,6 +312,23 @@
     d.setDate(d.getDate() - day);
     return isoFromDate(d);
   }
+  function startOfMonthISO(iso) {
+    const d = dateFromISO(iso);
+    return isoFromDate(new Date(d.getFullYear(), d.getMonth(), 1));
+  }
+  function addMonths(iso, n) {
+    const d = dateFromISO(iso);
+    return isoFromDate(new Date(d.getFullYear(), d.getMonth() + n, 1));
+  }
+  function monthGridDates(monthStartIso) {
+    const d = dateFromISO(monthStartIso);
+    const lastOfMonthIso = isoFromDate(new Date(d.getFullYear(), d.getMonth() + 1, 0));
+    const gridStart = startOfWeekISO(monthStartIso);
+    const gridEnd = addDays(startOfWeekISO(lastOfMonthIso), 6);
+    const dates = [];
+    for (let cur = gridStart; cur <= gridEnd; cur = addDays(cur, 1)) dates.push(cur);
+    return dates;
+  }
   const WEEKDAY_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
   const WEEKDAY_FULL = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"];
   const MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
@@ -509,6 +526,7 @@
   function ensureScheduleInit() {
     if (!state.schedule.selectedDate) state.schedule.selectedDate = todayISO();
     if (!state.schedule.weekStart) state.schedule.weekStart = startOfWeekISO(state.schedule.selectedDate);
+    if (!state.schedule.monthStart) state.schedule.monthStart = startOfMonthISO(state.schedule.selectedDate);
   }
 
   /* ---------------------------------------------------------
@@ -963,6 +981,12 @@
     const next = nextLesson();
     const todays = lessonsOnDate(todayISO());
 
+    const activeStudents = state.students.filter((s) => s.status === "active").length;
+    const monthRange = periodRange("month");
+    const monthBalance = incomeLessonsInRange(monthRange).reduce((s, l) => s + (l.price || 0), 0)
+      - expensesInRange(monthRange).reduce((s, e) => s + (e.amount || 0), 0);
+    const monthStats = statsForPeriod("month");
+
     const nextBlock = next ? `
       <div class="next-lesson">
         <div class="time">${next.time}</div>
@@ -973,6 +997,31 @@
       </div>` : "";
 
     return `
+      <button class="quick-btn primary" style="margin-bottom:14px" onclick="openConductLesson()"><span class="ico">➕</span> Провести занятие</button>
+
+      <div class="section-grid">
+        <button class="section-card row-tap" onclick="goTo('schedule')">
+          <span class="ico">📅</span>
+          <div class="t">Расписание</div>
+          <div class="v">${cnt} сегодня</div>
+        </button>
+        <button class="section-card row-tap" onclick="goTo('students')">
+          <span class="ico">👨‍🎓</span>
+          <div class="t">Ученики</div>
+          <div class="v">${activeStudents} активных</div>
+        </button>
+        <button class="section-card row-tap" onclick="goTo('finances')">
+          <span class="ico">💰</span>
+          <div class="t">Финансы</div>
+          <div class="v">${money(monthBalance)}</div>
+        </button>
+        <button class="section-card row-tap" onclick="goTo('stats')">
+          <span class="ico">📊</span>
+          <div class="t">Статистика</div>
+          <div class="v">${monthStats.lessonsCount} занятий/мес</div>
+        </button>
+      </div>
+
       <div class="hero">
         <div class="hero-label">Доход за сегодня</div>
         <div class="hero-amount">${money(income)}</div>
@@ -981,14 +1030,6 @@
           <div class="hero-stat"><div class="n">${unpaid}</div><div class="l">не оплачено всего</div></div>
         </div>
         ${nextBlock}
-      </div>
-
-      <div class="quick-grid">
-        <button class="quick-btn primary" onclick="openConductLesson()"><span class="ico">➕</span> Провести занятие</button>
-        <button class="quick-btn" onclick="goTo('schedule')"><span class="ico">📅</span>Расписание</button>
-        <button class="quick-btn" onclick="goTo('students')"><span class="ico">👨‍🎓</span>Ученики</button>
-        <button class="quick-btn" onclick="goTo('finances')"><span class="ico">💰</span>Финансы</button>
-        <button class="quick-btn" onclick="goTo('stats')"><span class="ico">📊</span>Статистика</button>
       </div>
 
       <div class="card">
@@ -1019,6 +1060,40 @@
     const ws = state.schedule.weekStart;
     const sel = state.schedule.selectedDate;
     const days = Array.from({ length: 7 }, (_, i) => addDays(ws, i));
+    const mode = state.schedule.mode;
+
+    const modeToggle = `
+      <div class="segmented" style="margin-bottom:14px">
+        <button class="${mode === "day" ? "active" : ""}" onclick="scheduleSetMode('day')">День</button>
+        <button class="${mode === "week" ? "active" : ""}" onclick="scheduleSetMode('week')">Неделя</button>
+        <button class="${mode === "month" ? "active" : ""}" onclick="scheduleSetMode('month')">Месяц</button>
+      </div>`;
+
+    if (mode === "month") {
+      const ms = state.schedule.monthStart;
+      const dates = monthGridDates(ms);
+      const curMonth = dateFromISO(ms).getMonth();
+      const monthLabel = `${MONTHS_NOM[curMonth]} ${dateFromISO(ms).getFullYear()}`;
+      const monthNav = `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <button class="back" onclick="scheduleShiftMonth(-1)">‹</button>
+          <div class="small muted" style="font-weight:600">${monthLabel}</div>
+          <button class="back" onclick="scheduleShiftMonth(1)">›</button>
+        </div>`;
+      const grid = `
+        <div class="month-grid-labels">${WEEKDAY_SHORT.map((w) => `<div>${w}</div>`).join("")}</div>
+        <div class="month-grid">
+          ${dates.map((d) => {
+            const inMonth = dateFromISO(d).getMonth() === curMonth;
+            const count = lessonsOnDate(d).length;
+            return `<button class="month-cell ${inMonth ? "" : "outside"} ${isToday(d) ? "today" : ""} ${d === sel ? "selected" : ""}" onclick="scheduleSelectDay('${d}')">
+              <div class="n">${dateFromISO(d).getDate()}</div>
+              ${count ? `<div class="dot"></div>` : ""}
+            </button>`;
+          }).join("")}
+        </div>`;
+      return `${modeToggle}${monthNav}${grid}`;
+    }
 
     const weekStrip = `
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
@@ -1036,14 +1111,8 @@
           </button>`).join("")}
       </div>`;
 
-    const modeToggle = `
-      <div class="segmented" style="margin-bottom:14px">
-        <button class="${state.schedule.mode === "week" ? "active" : ""}" onclick="scheduleSetMode('week')">Неделя</button>
-        <button class="${state.schedule.mode === "day" ? "active" : ""}" onclick="scheduleSetMode('day')">День</button>
-      </div>`;
-
     let body = "";
-    if (state.schedule.mode === "day") {
+    if (mode === "day") {
       const list = lessonsOnDate(sel);
       body = `
         <div class="day-group-title">${weekdayFull(sel)}, ${humanDate(sel)}</div>
@@ -1083,12 +1152,21 @@
     state.schedule.weekStart = addDays(state.schedule.weekStart, dir * 7);
     render();
   };
+  window.scheduleShiftMonth = function (dir) {
+    state.schedule.monthStart = addMonths(state.schedule.monthStart, dir);
+    render();
+  };
   window.scheduleSelectDay = function (d) {
     state.schedule.selectedDate = d;
     state.schedule.mode = "day";
     render();
   };
-  window.scheduleSetMode = function (m) { state.schedule.mode = m; render(); };
+  window.scheduleSetMode = function (m) {
+    state.schedule.mode = m;
+    if (m === "month") state.schedule.monthStart = startOfMonthISO(state.schedule.selectedDate);
+    if (m === "week") state.schedule.weekStart = startOfWeekISO(state.schedule.selectedDate);
+    render();
+  };
 
   /* ---------------------------------------------------------
      STUDENTS LIST VIEW
