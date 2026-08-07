@@ -755,7 +755,7 @@
     const title = TOPBAR_TITLES[state.view] || "";
     let action = "";
     if (state.view === "students") action = `<button class="back" style="color:var(--ink)" onclick="openAddStudent()">+ Добавить</button>`;
-    if (state.view === "schedule") action = `<button class="back" style="color:var(--ink)" onclick="openAddLesson(state_scheduleDate())">+ Занятие</button>`;
+    if (state.view === "schedule") action = `<button class="back" style="color:var(--ink);margin-right:8px" onclick="openAddRecurring()">🔁</button><button class="back" style="color:var(--ink)" onclick="openAddLesson(state_scheduleDate())">+ Занятие</button>`;
     if (state.view === "finances") action = `<button class="back" style="color:var(--ink)" onclick="openAddExpense()">+ Расход</button>`;
     return `<div class="topbar">
       <div style="display:flex;align-items:center;justify-content:space-between">
@@ -1641,6 +1641,77 @@
     closeModal();
     showToast("Занятие удалено");
     render();
+  };
+
+  /* ---------------------------------------------------------
+     ПОВТОРЯЮЩИЕСЯ ЗАНЯТИЯ
+  --------------------------------------------------------- */
+  window.openAddRecurring = function () {
+    if (!state.students.length) { showToast("Сначала добавьте ученика"); return; }
+    const studentOptions = state.students.map((s) => `<option value="${s.id}">${escapeHTML(s.name)}</option>`).join("");
+    openModal(`
+      <div class="modal-header"><h2>Повторяющееся занятие</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+      <div class="field"><label>Ученик</label><select id="r-student">${studentOptions}</select></div>
+      <div class="field-row">
+        <div class="field"><label>День недели</label>
+          <select id="r-weekday">
+            ${WEEKDAY_FULL.map((w, i) => `<option value="${i}">${w}</option>`).join("")}
+          </select>
+        </div>
+        <div class="field"><label>Время</label><input type="time" id="r-time" value="16:00" /></div>
+      </div>
+      <div class="field"><label>Периодичность</label>
+        <select id="r-repeat">
+          <option value="weekly">Каждую неделю</option>
+          <option value="biweekly">Раз в две недели</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Дата начала</label><input type="date" id="r-start" value="${todayISO()}" /></div>
+        <div class="field"><label>Дата окончания</label><input type="date" id="r-end" value="${addDays(todayISO(), 84)}" /></div>
+      </div>
+      <div class="small muted" style="margin-bottom:10px">Занятия будут автоматически созданы в расписании на весь указанный период.</div>
+      <button class="btn btn-primary" onclick="saveRecurring()">Создать занятия</button>
+    `);
+  };
+
+  window.saveRecurring = async function () {
+    const studentId = document.getElementById("r-student").value;
+    const weekday = Number(document.getElementById("r-weekday").value);
+    const time = document.getElementById("r-time").value;
+    const repeat = document.getElementById("r-repeat").value;
+    const startDate = document.getElementById("r-start").value;
+    const endDate = document.getElementById("r-end").value;
+    const student = getStudent(studentId);
+    if (!student) { showToast("Выберите ученика"); return; }
+    if (!startDate || !endDate || endDate < startDate) { showToast("Проверьте даты начала и окончания"); return; }
+
+    await withGuard("saveRecurring", async () => {
+      let cur = startDate;
+      while ((dateFromISO(cur).getDay() + 6) % 7 !== weekday) cur = addDays(cur, 1);
+      const step = repeat === "biweekly" ? 14 : 7;
+      const dates = [];
+      while (cur <= endDate) { dates.push(cur); cur = addDays(cur, step); }
+      if (!dates.length) { showToast("В выбранном периоде нет подходящих дат"); return; }
+
+      const { data: ruleRow, error: ruleErr } = await sbClient.from("recurring_schedules").insert({
+        student_id: studentId, weekday, start_time: time, duration: student.duration,
+        repeat_type: repeat, start_date: startDate, end_date: endDate, price: student.price,
+      }).select().single();
+      if (ruleErr) { console.error(ruleErr); showToast("Не удалось создать повторение"); return; }
+
+      const rows = dates.map((d) => ({
+        student_id: studentId, date: d, time, status: "planned",
+        price: student.price, paid: false, homework: "", comment: "",
+        recurring_schedule_id: ruleRow.id,
+      }));
+      const { data: created, error: insErr } = await sbClient.from("lessons").insert(rows).select();
+      if (insErr) { console.error(insErr); showToast("Занятия не удалось создать"); return; }
+      state.lessons.push(...(created || []).map(lessonFromRow));
+      closeModal();
+      showToast(`Создано занятий: ${(created || []).length}`);
+      render();
+    });
   };
 
   /* ---------------------------------------------------------
