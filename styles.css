@@ -457,6 +457,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   font-weight: 700; color: var(--accent-ink); font-size: 15px;
   flex-shrink: 0; background: var(--accent-soft);
 }
+.notif-badge {
+  position: absolute; top: -3px; right: -3px;
+  background: var(--danger); color: #fff; font-size: 10px; font-weight: 700;
+  min-width: 16px; height: 16px; border-radius: 999px; padding: 0 3px;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid var(--bg);
+}
 .profile-avatar-lg {
   width: 88px; height: 88px; border-radius: 50%; margin: 0 auto;
   background: var(--accent-soft); color: var(--accent-ink);

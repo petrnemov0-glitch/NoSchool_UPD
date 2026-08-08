@@ -157,27 +157,23 @@
 
   // Определяет роль текущего пользователя (репетитор/родитель/ученик) и
   // подгружает соответствующие данные. Безопасно вызывать повторно.
+  async function finishRoleLoad(role, dataLoader) {
+    state.role = role;
+    await dataLoader();
+    await fetchNotifications();
+    await fetchFreeSlots();
+    if (role === "tutor") await fetchPendingRequests();
+  }
+
   async function loadForCurrentRole() {
     await fetchProfile();
     const myId = state.session.user.id;
     const tutorRes = await sbClient.from("tutors").select("id").eq("user_id", myId).limit(1);
-    if (tutorRes.data && tutorRes.data.length) {
-      state.role = "tutor";
-      await dbFetchAll();
-      return;
-    }
+    if (tutorRes.data && tutorRes.data.length) { await finishRoleLoad("tutor", dbFetchAll); return; }
     const parentRes = await sbClient.from("parents").select("id").eq("user_id", myId).limit(1);
-    if (parentRes.data && parentRes.data.length) {
-      state.role = "parent";
-      await dbFetchAllParent();
-      return;
-    }
+    if (parentRes.data && parentRes.data.length) { await finishRoleLoad("parent", dbFetchAllParent); return; }
     const studentRes = await sbClient.from("students").select("id").eq("user_id", myId).limit(1);
-    if (studentRes.data && studentRes.data.length) {
-      state.role = "student";
-      await dbFetchAllStudent();
-      return;
-    }
+    if (studentRes.data && studentRes.data.length) { await finishRoleLoad("student", dbFetchAllStudent); return; }
 
     // Никакая роль не найдена — вероятно, регистрация была прервана
     // подтверждением почты до того, как выполнился бутстрап/привязка по
@@ -197,11 +193,11 @@
           await sbClient.rpc("bootstrap_individual_tutor");
         }
         const retryTutor = await sbClient.from("tutors").select("id").eq("user_id", myId).limit(1);
-        if (retryTutor.data && retryTutor.data.length) { state.role = "tutor"; await dbFetchAll(); return; }
+        if (retryTutor.data && retryTutor.data.length) { await finishRoleLoad("tutor", dbFetchAll); return; }
         const retryParent = await sbClient.from("parents").select("id").eq("user_id", myId).limit(1);
-        if (retryParent.data && retryParent.data.length) { state.role = "parent"; await dbFetchAllParent(); return; }
+        if (retryParent.data && retryParent.data.length) { await finishRoleLoad("parent", dbFetchAllParent); return; }
         const retryStudent = await sbClient.from("students").select("id").eq("user_id", myId).limit(1);
-        if (retryStudent.data && retryStudent.data.length) { state.role = "student"; await dbFetchAllStudent(); return; }
+        if (retryStudent.data && retryStudent.data.length) { await finishRoleLoad("student", dbFetchAllStudent); return; }
       } catch (e) { console.error(e); }
     }
     state.role = null; // ещё не настроено (не должно случаться в норме)
@@ -213,6 +209,7 @@
     state.students = []; state.lessons = []; state.expenses = [];
     state.parentChildren = []; state.parentLessons = [];
     state.studentSelf = null; state.studentLessons = [];
+    state.notifications = []; state.freeSlots = []; state.pendingRequests = [];
   }
 
   // Защита от повторной отправки: если пользователь нажмёт «Сохранить»
@@ -279,6 +276,113 @@
     return true;
   }
 
+  /* ---------------------------------------------------------
+     УВЕДОМЛЕНИЯ
+  --------------------------------------------------------- */
+  async function createNotification(userId, type, message) {
+    if (!userId) return;
+    const { error } = await sbClient.from("notifications").insert({ user_id: userId, type, message });
+    if (error) console.error(error);
+  }
+  async function fetchNotifications() {
+    const { data } = await sbClient.from("notifications").select("*").order("created_at", { ascending: false }).limit(50);
+    state.notifications = data || [];
+  }
+  function unreadNotificationsCount() {
+    return state.notifications.filter((n) => !n.read_status).length;
+  }
+
+  /* ---------------------------------------------------------
+     СВОБОДНЫЕ ОКНА
+  --------------------------------------------------------- */
+  async function fetchFreeSlots() {
+    const { data } = await sbClient.from("free_slots").select("*").order("weekday");
+    state.freeSlots = data || [];
+  }
+  async function dbInsertFreeSlot(weekday, startTime, endTime) {
+    const { data, error } = await sbClient.from("free_slots").insert({ weekday, start_time: startTime, end_time: endTime }).select().single();
+    if (error) { console.error(error); showToast("Не удалось добавить окно"); return null; }
+    return data;
+  }
+  async function dbDeleteFreeSlot(id) {
+    const { error } = await sbClient.from("free_slots").delete().eq("id", id);
+    if (error) { console.error(error); showToast("Не удалось удалить"); return false; }
+    return true;
+  }
+
+  /* ---------------------------------------------------------
+     ЗАПРОСЫ НА ПЕРЕНОС / ОТМЕНУ
+  --------------------------------------------------------- */
+  async function fetchPendingRequests() {
+    const { data } = await sbClient.from("lesson_change_requests").select("*").eq("status", "pending").order("created_at");
+    state.pendingRequests = data || [];
+  }
+
+  function upcomingFreeSlotOptions(daysAhead) {
+    const today = todayISO();
+    const options = [];
+    for (let i = 1; i <= daysAhead; i++) {
+      const d = addDays(today, i);
+      const wd = (dateFromISO(d).getDay() + 6) % 7;
+      state.freeSlots.filter((s) => s.weekday === wd).forEach((s) => {
+        options.push({ date: d, time: s.start_time.slice(0, 5) });
+      });
+    }
+    return options;
+  }
+
+  window.openRequestsModal = async function () {
+    await fetchPendingRequests();
+    const rows = state.pendingRequests.map((r) => {
+      const l = state.lessons.find((x) => x.id === r.lesson_id);
+      const st = l ? getStudent(l.studentId) : null;
+      const roleLabel = r.requested_by_role === "parent" ? "Родитель" : "Ученик";
+      return `
+        <div class="card" style="margin-bottom:10px">
+          <div style="font-weight:700">${escapeHTML(st?.name || "Ученик")}</div>
+          <div class="small muted" style="margin-bottom:6px">${roleLabel} просит ${r.type === "cancel" ? "отменить" : "перенести"} занятие ${l ? humanDate(l.date) + " · " + l.time : ""}</div>
+          ${r.type === "reschedule" ? `<div class="small" style="margin-bottom:6px">Новое время: <b>${humanDate(r.new_date)}, ${r.new_time?.slice(0, 5)}</b></div>` : ""}
+          ${r.reason ? `<div class="small muted" style="margin-bottom:6px">«${escapeHTML(r.reason)}»</div>` : ""}
+          <div class="btn-row">
+            <button class="btn btn-secondary" onclick="resolveRequest('${r.id}', 'rejected')">Отклонить</button>
+            <button class="btn btn-primary" onclick="resolveRequest('${r.id}', 'approved')">Подтвердить</button>
+          </div>
+        </div>`;
+    }).join("");
+    openModal(`
+      <div class="modal-header"><h2>Запросы</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+      ${rows || emptyBlock("📨", "Запросов нет", "Здесь появятся запросы на перенос или отмену")}
+    `);
+  };
+
+  window.resolveRequest = async function (requestId, decision) {
+    const r = state.pendingRequests.find((x) => x.id === requestId);
+    if (!r) return;
+    const l = state.lessons.find((x) => x.id === r.lesson_id);
+    if (decision === "approved" && l) {
+      let ok = true;
+      if (r.type === "cancel") {
+        ok = await dbUpdateLesson(l.id, { ...l, status: "cancelled", comment: r.reason || l.comment });
+        if (ok) l.status = "cancelled";
+      } else if (r.type === "reschedule") {
+        ok = await dbUpdateLesson(l.id, { ...l, date: r.new_date, time: r.new_time.slice(0, 5) });
+        if (ok) { l.date = r.new_date; l.time = r.new_time.slice(0, 5); }
+      }
+      if (!ok) return;
+    }
+    const { error } = await sbClient.from("lesson_change_requests")
+      .update({ status: decision, resolved_by: state.session.user.id, resolved_at: new Date().toISOString() })
+      .eq("id", requestId);
+    if (error) { console.error(error); showToast("Не удалось сохранить решение"); return; }
+    state.pendingRequests = state.pendingRequests.filter((x) => x.id !== requestId);
+    const verb = r.type === "cancel" ? "отмену" : "перенос";
+    await createNotification(r.requested_by, "reschedule",
+      decision === "approved" ? `Репетитор подтвердил ${verb} занятия` : `Репетитор отклонил запрос на ${verb} занятия`);
+    showToast(decision === "approved" ? "Подтверждено" : "Отклонено");
+    closeModal();
+    render();
+  };
+
   async function dbInsertExpense(data) {
     const { data: row, error } = await sbClient.from("expenses").insert(expenseToRow(data)).select().single();
     if (error) { console.error(error); showToast("Не удалось сохранить расход"); return null; }
@@ -306,6 +410,9 @@
     parentLessons: [],
     studentSelf: null,
     studentLessons: [],
+    notifications: [],
+    freeSlots: [],
+    pendingRequests: [],
     view: "home",
     schedule: { mode: "week", weekStart: null, selectedDate: null },
     studentDetail: { id: null, tab: "history" },
@@ -805,8 +912,37 @@
     const bg = url
       ? `background-image:url('${url}');background-size:cover;background-position:center;`
       : `background:var(--accent-soft);`;
-    return `<button class="profile-btn" style="${bg}" onclick="openProfileModal()" aria-label="Профиль">${url ? "" : escapeHTML(profileInitial())}</button>`;
+    const unread = unreadNotificationsCount();
+    return `<div style="display:flex;align-items:center;gap:8px">
+      <button class="profile-btn" style="background:var(--surface-2);position:relative" onclick="openNotificationsModal()" aria-label="Уведомления">
+        🔔${unread > 0 ? `<span class="notif-badge">${unread > 9 ? "9+" : unread}</span>` : ""}
+      </button>
+      <button class="profile-btn" style="${bg}" onclick="openProfileModal()" aria-label="Профиль">${url ? "" : escapeHTML(profileInitial())}</button>
+    </div>`;
   }
+
+  window.openNotificationsModal = async function () {
+    await fetchNotifications();
+    const list = state.notifications;
+    openModal(`
+      <div class="modal-header"><h2>Уведомления</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+      ${list.length === 0 ? emptyBlock("🔔", "Пока пусто", "Здесь будут появляться события") :
+      list.map((n) => `
+        <div class="row" style="border:none;padding:10px 4px;${n.read_status ? "opacity:0.6" : ""}">
+          <div class="row-main">
+            <div class="row-title" style="font-size:14px">${escapeHTML(n.message)}</div>
+            <div class="row-sub">${humanDateYear(n.created_at.slice(0, 10))}</div>
+          </div>
+          ${!n.read_status ? `<span class="badge accent">новое</span>` : ""}
+        </div>`).join("")}
+    `);
+    const unreadIds = list.filter((n) => !n.read_status).map((n) => n.id);
+    if (unreadIds.length) {
+      await sbClient.from("notifications").update({ read_status: true }).in("id", unreadIds);
+      state.notifications.forEach((n) => { n.read_status = true; });
+      render();
+    }
+  };
 
   window.openProfileModal = function () {
     const roleLabel = { tutor: "Репетитор", parent: "Родитель", student: "Ученик" }[state.role] || "";
@@ -882,6 +1018,7 @@
   --------------------------------------------------------- */
   window.openSettings = async function () {
     let bioSection = "";
+    let freeSlotsSection = "";
     if (state.role === "tutor") {
       if (!state.tutorBio) {
         const { data } = await sbClient.from("tutors").select("description, subjects").limit(1).maybeSingle();
@@ -893,11 +1030,31 @@
         <div class="field"><label>Предметы (через запятую)</label><input type="text" id="settings-subjects" value="${escapeHTML(state.tutorBio.subjects)}" placeholder="Математика, физика" /></div>
         <button class="btn btn-secondary" onclick="saveTutorBio()">Сохранить «О себе»</button>
       `;
+      await fetchFreeSlots();
+      freeSlotsSection = `
+        <div class="card-title section-gap">Свободные окна для переноса</div>
+        <div class="small muted" style="margin-bottom:8px">Родитель/ученик смогут предлагать перенос занятия только в эти интервалы</div>
+        ${state.freeSlots.length === 0 ? `<div class="small muted" style="margin-bottom:8px">Окон пока нет</div>` :
+        state.freeSlots.map((s) => `
+          <div class="row" style="border:none;padding:6px 0">
+            <div class="row-main small">${WEEKDAY_FULL[s.weekday]}, ${s.start_time.slice(0, 5)}–${s.end_time.slice(0, 5)}</div>
+            <button class="btn-ghost" onclick="removeFreeSlot('${s.id}')">✕</button>
+          </div>`).join("")}
+        <div class="field-row" style="margin-top:8px">
+          <div class="field"><label>День</label>
+            <select id="fs-weekday">${WEEKDAY_FULL.map((w, i) => `<option value="${i}">${w}</option>`).join("")}</select>
+          </div>
+          <div class="field"><label>С</label><input type="time" id="fs-start" value="16:00" /></div>
+          <div class="field"><label>До</label><input type="time" id="fs-end" value="18:00" /></div>
+        </div>
+        <button class="btn btn-secondary" style="width:100%" onclick="addFreeSlot()">Добавить окно</button>
+      `;
     }
     const np = state.profile.notifyPrefs || {};
     openModal(`
       <div class="modal-header"><h2>Настройки</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
       ${bioSection}
+      ${freeSlotsSection}
       <div class="card-title section-gap">Уведомления</div>
       <div class="toggle-row">
         <span class="label">Напоминания о занятиях</span>
@@ -911,7 +1068,7 @@
         <span class="label">О переносах и отменах</span>
         <button class="switch ${np.reschedule ? "on" : ""}" id="notif-reschedule" onclick="this.classList.toggle('on')"></button>
       </div>
-      <div class="small muted" style="margin-top:6px">Сама доставка уведомлений появится на следующем этапе — сейчас здесь сохраняются ваши предпочтения заранее.</div>
+      <div class="small muted" style="margin-top:6px">Уведомления о переносах/отменах уже приходят по факту события (колокольчик вверху). Регулярные напоминания «занятие скоро» и «пора оплатить» — по расписанию, а не по событию — появятся отдельно, это переключатель для них заранее.</div>
       <button class="btn btn-primary" style="margin-top:14px" onclick="saveNotifyPrefs()">Сохранить настройки</button>
 
       <div class="card-title section-gap" style="color:var(--danger)">Опасная зона</div>
@@ -922,6 +1079,26 @@
       </div>
       <button class="btn btn-danger" style="width:100%" onclick="deleteMyAccount()">Удалить аккаунт</button>
     `);
+  };
+
+  window.addFreeSlot = async function () {
+    const weekday = Number(document.getElementById("fs-weekday").value);
+    const start = document.getElementById("fs-start").value;
+    const end = document.getElementById("fs-end").value;
+    if (end <= start) { showToast("Время окончания должно быть позже начала"); return; }
+    const created = await dbInsertFreeSlot(weekday, start, end);
+    if (!created) return;
+    state.freeSlots.push(created);
+    state.freeSlots.sort((a, b) => a.weekday - b.weekday);
+    showToast("Окно добавлено");
+    openSettings();
+  };
+  window.removeFreeSlot = async function (id) {
+    const ok = await dbDeleteFreeSlot(id);
+    if (!ok) return;
+    state.freeSlots = state.freeSlots.filter((s) => s.id !== id);
+    showToast("Окно удалено");
+    openSettings();
   };
 
   window.saveTutorBio = async function () {
@@ -1046,6 +1223,10 @@
       </div>` : "";
 
     return `
+      ${state.pendingRequests.length > 0 ? `
+        <button class="quick-btn" style="margin-bottom:10px;border-color:var(--warning);background:var(--warning-soft)" onclick="openRequestsModal()">
+          <span class="ico">📨</span>Запросы на перенос/отмену — ${state.pendingRequests.length}
+        </button>` : ""}
       <button class="quick-btn primary" style="margin-bottom:14px" onclick="openConductLesson()"><span class="ico">➕</span> Провести занятие</button>
 
       <div class="section-grid">
@@ -2029,6 +2210,13 @@
         <div class="field"><label>или ссылка на чек</label><input type="text" id="pf-link" placeholder="https://..." value="${escapeHTML(paymentRow?.proof_link || "")}" /></div>
         <button class="btn btn-secondary" style="width:100%" onclick="submitPaymentProof('${l.id}', '${st.id}')">Отправить подтверждение</button>
       ` : ""}
+
+      ${l.status === "planned" ? `
+        <div class="btn-row section-gap">
+          <button class="btn btn-secondary" onclick="requestCancel('${l.id}')">Отменить</button>
+          <button class="btn btn-secondary" onclick="openRescheduleOptions('${l.id}')">Перенести</button>
+        </div>
+      ` : ""}
     `);
   };
 
@@ -2051,6 +2239,52 @@
     }
     if (error) { console.error(error); showToast("Не удалось отправить"); return; }
     showToast("Отправлено репетитору");
+    closeModal();
+  };
+
+  async function notifyTutorOfRequest(lessonId, type) {
+    const { data: lessonRow } = await sbClient.from("lessons").select("tutor_id").eq("id", lessonId).maybeSingle();
+    if (!lessonRow) return;
+    const { data: tutorRow } = await sbClient.from("tutors").select("user_id").eq("id", lessonRow.tutor_id).maybeSingle();
+    if (!tutorRow) return;
+    const verb = type === "cancel" ? "отмену" : "перенос";
+    await createNotification(tutorRow.user_id, "request", `Новый запрос на ${verb} занятия`);
+  }
+
+  window.requestCancel = async function (lessonId) {
+    const reason = prompt("Причина отмены (необязательно):") || "";
+    const { error } = await sbClient.from("lesson_change_requests").insert({
+      lesson_id: lessonId, type: "cancel",
+      requested_by: state.session.user.id, requested_by_role: state.role, reason,
+    });
+    if (error) { console.error(error); showToast("Не удалось отправить запрос"); return; }
+    await notifyTutorOfRequest(lessonId, "cancel");
+    showToast("Запрос на отмену отправлен репетитору");
+    closeModal();
+  };
+
+  window.openRescheduleOptions = function (lessonId) {
+    const options = upcomingFreeSlotOptions(21);
+    if (!options.length) { showToast("У репетитора пока нет свободных окон для переноса"); return; }
+    openModal(`
+      <div class="modal-header"><h2>Выберите время</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+      ${options.slice(0, 30).map((o) => `
+        <div class="row row-tap" onclick="requestReschedule('${lessonId}', '${o.date}', '${o.time}')">
+          <div class="row-main"><div class="row-title">${humanDate(o.date)}</div><div class="row-sub">${weekdayFull(o.date)}</div></div>
+          <div class="row-amount">${o.time}</div>
+        </div>`).join("")}
+    `);
+  };
+
+  window.requestReschedule = async function (lessonId, newDate, newTime) {
+    const { error } = await sbClient.from("lesson_change_requests").insert({
+      lesson_id: lessonId, type: "reschedule",
+      requested_by: state.session.user.id, requested_by_role: state.role,
+      new_date: newDate, new_time: newTime,
+    });
+    if (error) { console.error(error); showToast("Не удалось отправить запрос"); return; }
+    await notifyTutorOfRequest(lessonId, "reschedule");
+    showToast("Запрос на перенос отправлен репетитору");
     closeModal();
   };
 
@@ -2118,7 +2352,7 @@
       <div class="card" style="padding:6px 12px">
         ${lessons.length === 0 ? `<div class="small muted" style="padding:10px 0">Занятий пока нет</div>` :
         lessons.slice(0, 15).map((l) => `
-          <div class="row">
+          <div class="row row-tap" onclick="openStudentHomeworkDetail('${l.id}')">
             <div class="row-main"><div class="row-title">${humanDate(l.date)} · ${l.time}</div></div>
             <span class="badge ${STATUS_BADGE_CLASS[l.status]}">${STATUS_LABEL[l.status]}</span>
           </div>`).join("")}
@@ -2130,16 +2364,27 @@
     const l = state.studentLessons.find((x) => x.id === lessonId);
     if (!l) return;
     openModal(`
-      <div class="modal-header"><h2>Домашнее задание</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
-      <div class="small muted" style="margin-bottom:10px">выдано ${humanDate(l.date)}</div>
-      <div class="small">${escapeHTML(l.homework)}</div>
-      ${l.homeworkFileUrl ? `<div class="small" style="margin-top:8px"><a href="${l.homeworkFileUrl}" target="_blank" style="color:var(--accent-ink);font-weight:600">📎 Материалы от репетитора</a></div>` : ""}
+      <div class="modal-header"><h2>${humanDate(l.date)} · ${l.time}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+      <span class="badge ${STATUS_BADGE_CLASS[l.status]}">${STATUS_LABEL[l.status]}</span>
 
-      <div class="card-title section-gap">Моё решение</div>
-      ${l.submissionFileUrl ? `<div class="small" style="margin-bottom:8px"><a href="${l.submissionFileUrl}" target="_blank" style="color:var(--accent-ink);font-weight:600">📎 Уже загруженный файл</a></div>` : ""}
-      <div class="field"><label>Файл или фото решения</label><input type="file" id="sub-file" accept="image/*,.pdf,.doc,.docx" /></div>
-      <div class="field"><label>Комментарий</label><textarea id="sub-comment" placeholder="Необязательно">${escapeHTML(l.submissionComment || "")}</textarea></div>
-      <button class="btn btn-primary" style="width:100%" onclick="submitHomework('${l.id}')">Отправить</button>
+      ${l.homework ? `
+        <div class="card-title section-gap">Домашнее задание</div>
+        <div class="small">${escapeHTML(l.homework)}</div>
+        ${l.homeworkFileUrl ? `<div class="small" style="margin-top:8px"><a href="${l.homeworkFileUrl}" target="_blank" style="color:var(--accent-ink);font-weight:600">📎 Материалы от репетитора</a></div>` : ""}
+
+        <div class="card-title section-gap">Моё решение</div>
+        ${l.submissionFileUrl ? `<div class="small" style="margin-bottom:8px"><a href="${l.submissionFileUrl}" target="_blank" style="color:var(--accent-ink);font-weight:600">📎 Уже загруженный файл</a></div>` : ""}
+        <div class="field"><label>Файл или фото решения</label><input type="file" id="sub-file" accept="image/*,.pdf,.doc,.docx" /></div>
+        <div class="field"><label>Комментарий</label><textarea id="sub-comment" placeholder="Необязательно">${escapeHTML(l.submissionComment || "")}</textarea></div>
+        <button class="btn btn-primary" style="width:100%" onclick="submitHomework('${l.id}')">Отправить</button>
+      ` : `<div class="small muted section-gap">Домашнего задания нет</div>`}
+
+      ${l.status === "planned" ? `
+        <div class="btn-row section-gap">
+          <button class="btn btn-secondary" onclick="requestCancel('${l.id}')">Отменить</button>
+          <button class="btn btn-secondary" onclick="openRescheduleOptions('${l.id}')">Перенести</button>
+        </div>
+      ` : ""}
     `);
   };
 
