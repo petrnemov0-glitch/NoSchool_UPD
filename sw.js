@@ -1,4 +1,4 @@
-const CACHE_NAME = "noschool-crm-v22";
+const CACHE_NAME = "noschool-crm-v23";
 const ASSETS = [
   "./",
   "./index.html",
@@ -7,7 +7,10 @@ const ASSETS = [
   "./config.js",
   "./manifest.json",
   "./icons/icon-192.png",
-  "./icons/icon-512.png"
+  "./icons/icon-512.png",
+  "./icons/icon-512-maskable.png",
+  "./icons/apple-touch-icon.png",
+  "./icons/favicon-32.png"
 ];
 
 self.addEventListener("install", (event) => {
@@ -47,10 +50,10 @@ self.addEventListener("fetch", (event) => {
 });
 
 self.addEventListener("push", (event) => {
-  let data = { title: "Не школа", body: "Новое уведомление" };
+  let data = { title: "Моя школа", body: "Новое уведомление" };
   try { if (event.data) data = event.data.json(); } catch (e) { /* используем значения по умолчанию */ }
   event.waitUntil(
-    self.registration.showNotification(data.title || "Не школа", {
+    self.registration.showNotification(data.title || "Моя школа", {
       body: data.body || "",
       icon: "icons/icon-192.png",
       badge: "icons/icon-192.png",

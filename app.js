@@ -1,5 +1,5 @@
 /* ===========================================================
-   Не школа CRM — приложение для репетитора
+   Моя школа CRM — приложение для репетитора
    Vanilla JS, без сборки. Данные хранятся в Supabase (Postgres).
    =========================================================== */
 
@@ -768,8 +768,8 @@
       <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px">
         <div class="card" style="width:100%;max-width:360px">
           <div style="text-align:center;margin-bottom:18px">
-            <img src="icons/logo.png" alt="Не школа" style="height:56px;margin:0 auto 6px;display:block" onerror="this.style.display='none';this.nextElementSibling.style.display='block'" />
-            <div style="display:none;font-size:28px;font-weight:700;font-family:var(--font-display)">Не школа</div>
+            <img src="icons/icon-192.png" alt="Моя школа" style="height:52px;width:52px;border-radius:14px;margin:0 auto 8px;display:block" />
+            <div style="font-size:26px;font-weight:700;font-family:var(--font-display)">Моя школа</div>
             <div class="muted small">${mode === "signin" ? "Вход в CRM" : "Регистрация"}</div>
           </div>
           ${mode === "signup" ? `
@@ -869,8 +869,8 @@
       <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px">
         <div class="card" style="width:100%;max-width:360px">
           <div style="text-align:center;margin-bottom:18px">
-            <img src="icons/logo.png" alt="Не школа" style="height:56px;margin:0 auto 6px;display:block" onerror="this.style.display='none';this.nextElementSibling.style.display='block'" />
-            <div style="display:none;font-size:28px;font-weight:700;font-family:var(--font-display)">Не школа</div>
+            <img src="icons/icon-192.png" alt="Моя школа" style="height:52px;width:52px;border-radius:14px;margin:0 auto 8px;display:block" />
+            <div style="font-size:26px;font-weight:700;font-family:var(--font-display)">Моя школа</div>
             <div class="muted small">Придумайте новый пароль</div>
           </div>
           <div class="field"><label>Новый пароль</label><input type="password" id="new-password" placeholder="Минимум 6 символов" autocomplete="new-password" /></div>
@@ -913,7 +913,7 @@
         <div style="display:flex;align-items:flex-start;justify-content:space-between">
           <div>
             <div class="eyebrow">${weekdayFull(d)}, ${humanDate(d)}</div>
-            <h1>Не школа</h1>
+            <h1>Моя школа</h1>
           </div>
           ${profileButtonHTML()}
         </div>
@@ -970,17 +970,33 @@
   window.openNotificationsModal = async function () {
     await fetchNotifications();
     const list = state.notifications;
-    openModal(`
-      <div class="modal-header"><h2>Уведомления</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
-      ${list.length === 0 ? emptyBlock("🔔", "Пока пусто", "Здесь будут появляться события") :
-      list.map((n) => `
+    const actionable = list.filter((n) => n.type === "request");
+    const info = list.filter((n) => n.type !== "request");
+
+    function notifRow(n) {
+      return `
         <div class="row" style="border:none;padding:10px 4px;${n.read_status ? "opacity:0.6" : ""}">
           <div class="row-main">
             <div class="row-title" style="font-size:14px">${escapeHTML(n.message)}</div>
             <div class="row-sub">${humanDateYear(n.created_at.slice(0, 10))}</div>
           </div>
           ${!n.read_status ? `<span class="badge accent">новое</span>` : ""}
-        </div>`).join("")}
+        </div>`;
+    }
+
+    openModal(`
+      <div class="modal-header"><h2>Уведомления</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+      ${list.length === 0 ? emptyBlock("🔔", "Пока пусто", "Здесь будут появляться события") : `
+        ${actionable.length ? `
+          <div class="card-title">Требуют действия</div>
+          <div class="card" style="padding:2px 12px;margin-bottom:14px">${actionable.map(notifRow).join("")}</div>
+          <button class="btn btn-primary" style="width:100%;margin-bottom:16px" onclick="closeModal(); openRequestsModal()">Открыть запросы</button>
+        ` : ""}
+        ${info.length ? `
+          <div class="card-title">Информационные</div>
+          <div class="card" style="padding:2px 12px">${info.map(notifRow).join("")}</div>
+        ` : ""}
+      `}
     `);
     const unreadIds = list.filter((n) => !n.read_status).map((n) => n.id);
     if (unreadIds.length) {
@@ -1096,6 +1112,7 @@
       </div>
       <div class="small muted" style="margin-top:6px">Уведомления о переносах/отменах приходят по факту события. Регулярные напоминания «занятие скоро» и «пора оплатить» — по расписанию — появятся отдельно.</div>
       <button class="btn btn-secondary" style="width:100%;margin-top:10px" onclick="enablePushNotifications()">🔔 Включить уведомления на устройство</button>
+      <button class="btn btn-ghost" style="width:100%" onclick="openPushDiagnostics()">🩺 Диагностика уведомлений</button>
       <button class="btn btn-primary" style="margin-top:10px" onclick="saveNotifyPrefs()">Сохранить настройки</button>
 
       <div class="card-title section-gap" style="color:var(--danger)">Опасная зона</div>
@@ -1207,6 +1224,71 @@
     }
   };
 
+  window.openPushDiagnostics = async function () {
+    const checks = [];
+
+    const swSupported = "serviceWorker" in navigator;
+    const pushSupported = "PushManager" in window;
+    checks.push({
+      label: "Push API поддерживается браузером",
+      ok: swSupported && pushSupported,
+      hint: !swSupported ? "Браузер не поддерживает Service Worker" : !pushSupported ? "Браузер не поддерживает Push API (в iOS работает только в режиме PWA, добавленном на экран «Домой», начиная с iOS 16.4)" : "",
+    });
+
+    let reg = null;
+    try { reg = await navigator.serviceWorker.getRegistration(); } catch (e) { /* noop */ }
+    checks.push({
+      label: "Service Worker зарегистрирован и активен",
+      ok: !!(reg && reg.active),
+      hint: !reg ? "Service Worker не зарегистрирован — переоткройте сайт" : !reg.active ? "Зарегистрирован, но ещё не активировался" : "",
+    });
+
+    const permission = (typeof Notification !== "undefined") ? Notification.permission : "unsupported";
+    checks.push({
+      label: "Разрешение на уведомления выдано",
+      ok: permission === "granted",
+      hint: permission === "denied" ? "Заблокировано — включите вручную в настройках браузера/сайта" : permission === "default" ? "Ещё не запрашивалось — нажмите «Включить уведомления»" : "",
+    });
+
+    let clientSub = null;
+    if (reg) { try { clientSub = await reg.pushManager.getSubscription(); } catch (e) { /* noop */ } }
+    checks.push({
+      label: "Подписка создана в браузере",
+      ok: !!clientSub,
+      hint: !clientSub ? "Нажмите «Включить уведомления на устройство»" : "",
+    });
+
+    let savedInDb = false;
+    if (clientSub && state.session) {
+      const { data } = await sbClient.from("push_subscriptions").select("id").eq("endpoint", clientSub.toJSON().endpoint).maybeSingle();
+      savedInDb = !!data;
+    }
+    checks.push({
+      label: "Подписка сохранена в базе",
+      ok: savedInDb,
+      hint: !savedInDb && clientSub ? "Подписка есть в браузере, но не записана в базу — попробуйте включить уведомления ещё раз" : "",
+    });
+
+    const isStandalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+    checks.push({
+      label: "Открыто как установленное приложение (не вкладка браузера)",
+      ok: isStandalone,
+      hint: !isStandalone ? "На iPhone push работает ТОЛЬКО если сайт добавлен на экран «Домой» и открыт оттуда, а не из Safari" : "",
+    });
+
+    openModal(`
+      <div class="modal-header"><h2>Диагностика уведомлений</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+      ${checks.map((c) => `
+        <div class="row" style="border:none;padding:8px 0;align-items:flex-start">
+          <div class="row-main">
+            <div class="row-title" style="font-size:14px">${c.ok ? "🟢" : "🔴"} ${escapeHTML(c.label)}</div>
+            ${!c.ok && c.hint ? `<div class="row-sub" style="color:var(--danger)">${escapeHTML(c.hint)}</div>` : ""}
+          </div>
+        </div>`).join("")}
+      <div class="small muted" style="margin-top:10px">На iPhone финальную доставку push можно проверить только на реальном устройстве — эмулятор и этот чек-лист не заменяют настоящую проверку.</div>
+    `);
+  };
+
   /* ---------------------------------------------------------
      «МОЙ РЕПЕТИТОР» (для родителя и ученика)
   --------------------------------------------------------- */
@@ -1294,11 +1376,28 @@
     return `
       ${state.pendingRequests.length > 0 ? `
         <button class="quick-btn" style="margin-bottom:10px;border-color:var(--warning);background:var(--warning-soft)" onclick="openRequestsModal()">
-          <span class="ico">📨</span>Запросы на перенос/отмену — ${state.pendingRequests.length}
+          <span class="ico">📨</span>Запросы, требующие подтверждения — ${state.pendingRequests.length}
         </button>` : ""}
+
+      <div class="hero">
+        <div class="hero-label">Доход за сегодня</div>
+        <div class="hero-amount">${money(income)}</div>
+        <div class="hero-stats">
+          <div class="hero-stat"><div class="n">${cnt}</div><div class="l">занятий сегодня</div></div>
+          <div class="hero-stat"><div class="n">${unpaid}</div><div class="l">не оплачено всего</div></div>
+        </div>
+        ${nextBlock}
+      </div>
+
       <button class="quick-btn primary" style="margin-bottom:14px" onclick="openConductLesson()"><span class="ico">➕</span> Провести занятие</button>
 
-      <div class="section-grid">
+      <div class="card">
+        <div class="card-title">Занятия сегодня</div>
+        ${todays.length === 0 ? `<div class="empty"><div class="ico">📭</div><div class="t">Сегодня занятий нет</div><div class="s">Добавьте занятие в расписании</div></div>` :
+        todays.map((l) => lessonRowHTML(l)).join("")}
+      </div>
+
+      <div class="section-grid section-gap">
         <button class="section-card row-tap" onclick="goTo('schedule')">
           <span class="ico">📅</span>
           <div class="t">Расписание</div>
@@ -1319,22 +1418,6 @@
           <div class="t">Статистика</div>
           <div class="v">${monthStats.lessonsCount} занятий/мес</div>
         </button>
-      </div>
-
-      <div class="hero">
-        <div class="hero-label">Доход за сегодня</div>
-        <div class="hero-amount">${money(income)}</div>
-        <div class="hero-stats">
-          <div class="hero-stat"><div class="n">${cnt}</div><div class="l">занятий сегодня</div></div>
-          <div class="hero-stat"><div class="n">${unpaid}</div><div class="l">не оплачено всего</div></div>
-        </div>
-        ${nextBlock}
-      </div>
-
-      <div class="card">
-        <div class="card-title">Занятия сегодня</div>
-        ${todays.length === 0 ? `<div class="empty"><div class="ico">📭</div><div class="t">Сегодня занятий нет</div><div class="s">Добавьте занятие в расписании</div></div>` :
-        todays.map((l) => lessonRowHTML(l)).join("")}
       </div>
     `;
   }
