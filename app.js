@@ -1,6 +1,6 @@
 /* ===========================================================
-   NoSchool CRM — приложение для репетитора
-   Vanilla JS, без зависимостей. Данные хранятся в localStorage.
+   Не школа CRM — приложение для репетитора
+   Vanilla JS, без сборки. Данные хранятся в Supabase (Postgres).
    =========================================================== */
 
 (function () {
@@ -45,6 +45,7 @@
       comment: r.comment, price: r.price, createdAt: r.created_at,
       homeworkFileUrl: r.homework_file_url, submissionFileUrl: r.submission_file_url,
       submissionComment: r.submission_comment,
+      boardLink: r.board_link, meetingLink: r.meeting_link, duration: r.duration,
     };
   }
   function lessonToRow(l) {
@@ -54,6 +55,8 @@
       comment: l.comment || "", price: l.price,
       homework_file_url: l.homeworkFileUrl || null, submission_file_url: l.submissionFileUrl || null,
       submission_comment: l.submissionComment || "",
+      board_link: l.boardLink || null, meeting_link: l.meetingLink || null,
+      duration: l.duration || 60,
     };
   }
   function expenseFromRow(r) {
@@ -478,6 +481,22 @@
   }
   function isToday(iso) { return iso === todayISO(); }
 
+  // Ищет пересечение по времени с уже существующим занятием того же
+  // репетитора в этот день (кроме отменённых и кроме самого себя при
+  // редактировании).
+  function findLessonConflict(date, time, durationMin, excludeId) {
+    const startTs = combineTS(date, time);
+    const endTs = startTs + (durationMin || 60) * 60000;
+    return state.lessons.find((l) => {
+      if (l.id === excludeId) return false;
+      if (l.date !== date) return false;
+      if (l.status === "cancelled") return false;
+      const lStart = combineTS(l.date, l.time);
+      const lEnd = lStart + (l.duration || 60) * 60000;
+      return startTs < lEnd && endTs > lStart;
+    });
+  }
+
   /* ---------------------------------------------------------
      FORMATTERS
   --------------------------------------------------------- */
@@ -673,6 +692,27 @@
   }
   window.showToast = showToast;
 
+  window.pickDurationChip = function (btn, chipsId, inputId) {
+    chipsId = chipsId || "l-duration-chips";
+    inputId = inputId || "l-duration";
+    document.querySelectorAll(`#${chipsId} .chip`).forEach((c) => c.classList.remove("active"));
+    btn.classList.add("active");
+    document.getElementById(inputId).value = btn.dataset.min;
+  };
+
+  window.copyInviteCode = async function (code) {
+    try {
+      await navigator.clipboard.writeText(code);
+    } catch (e) {
+      const ta = document.createElement("textarea");
+      ta.value = code; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); } catch (e2) { /* noop */ }
+      document.body.removeChild(ta);
+    }
+    showToast("Код скопирован");
+  };
+
   /* ---------------------------------------------------------
      MODAL
   --------------------------------------------------------- */
@@ -703,6 +743,10 @@
       return;
     }
     app.innerHTML = `${renderTopbar()}<div class="view">${renderView()}</div>${renderBottomNav()}`;
+    if (state.view === "schedule" && (state.schedule.mode === "day" || state.schedule.mode === "week")) {
+      const wrap = document.querySelector(".day-timeline-wrap, .week-grid-wrap");
+      if (wrap) wrap.scrollTop = 7 * HOUR_PX; // не начинаем день с полуночи
+    }
   }
 
   function renderSetupNeeded() {
@@ -724,7 +768,8 @@
       <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px">
         <div class="card" style="width:100%;max-width:360px">
           <div style="text-align:center;margin-bottom:18px">
-            <div style="font-size:28px;font-weight:700;font-family:var(--font-display)">NoSchool</div>
+            <img src="icons/logo.png" alt="Не школа" style="height:56px;margin:0 auto 6px;display:block" onerror="this.style.display='none';this.nextElementSibling.style.display='block'" />
+            <div style="display:none;font-size:28px;font-weight:700;font-family:var(--font-display)">Не школа</div>
             <div class="muted small">${mode === "signin" ? "Вход в CRM" : "Регистрация"}</div>
           </div>
           ${mode === "signup" ? `
@@ -824,7 +869,8 @@
       <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px">
         <div class="card" style="width:100%;max-width:360px">
           <div style="text-align:center;margin-bottom:18px">
-            <div style="font-size:28px;font-weight:700;font-family:var(--font-display)">NoSchool</div>
+            <img src="icons/logo.png" alt="Не школа" style="height:56px;margin:0 auto 6px;display:block" onerror="this.style.display='none';this.nextElementSibling.style.display='block'" />
+            <div style="display:none;font-size:28px;font-weight:700;font-family:var(--font-display)">Не школа</div>
             <div class="muted small">Придумайте новый пароль</div>
           </div>
           <div class="field"><label>Новый пароль</label><input type="password" id="new-password" placeholder="Минимум 6 символов" autocomplete="new-password" /></div>
@@ -867,7 +913,7 @@
         <div style="display:flex;align-items:flex-start;justify-content:space-between">
           <div>
             <div class="eyebrow">${weekdayFull(d)}, ${humanDate(d)}</div>
-            <h1>NoSchool</h1>
+            <h1>Не школа</h1>
           </div>
           ${profileButtonHTML()}
         </div>
@@ -1018,7 +1064,6 @@
   --------------------------------------------------------- */
   window.openSettings = async function () {
     let bioSection = "";
-    let freeSlotsSection = "";
     if (state.role === "tutor") {
       if (!state.tutorBio) {
         const { data } = await sbClient.from("tutors").select("description, subjects").limit(1).maybeSingle();
@@ -1029,32 +1074,13 @@
         <div class="field"><label>Описание</label><textarea id="settings-bio" placeholder="Коротко о себе, опыте, подходе к занятиям">${escapeHTML(state.tutorBio.description)}</textarea></div>
         <div class="field"><label>Предметы (через запятую)</label><input type="text" id="settings-subjects" value="${escapeHTML(state.tutorBio.subjects)}" placeholder="Математика, физика" /></div>
         <button class="btn btn-secondary" onclick="saveTutorBio()">Сохранить «О себе»</button>
-      `;
-      await fetchFreeSlots();
-      freeSlotsSection = `
-        <div class="card-title section-gap">Свободные окна для переноса</div>
-        <div class="small muted" style="margin-bottom:8px">Родитель/ученик смогут предлагать перенос занятия только в эти интервалы</div>
-        ${state.freeSlots.length === 0 ? `<div class="small muted" style="margin-bottom:8px">Окон пока нет</div>` :
-        state.freeSlots.map((s) => `
-          <div class="row" style="border:none;padding:6px 0">
-            <div class="row-main small">${WEEKDAY_FULL[s.weekday]}, ${s.start_time.slice(0, 5)}–${s.end_time.slice(0, 5)}</div>
-            <button class="btn-ghost" onclick="removeFreeSlot('${s.id}')">✕</button>
-          </div>`).join("")}
-        <div class="field-row" style="margin-top:8px">
-          <div class="field"><label>День</label>
-            <select id="fs-weekday">${WEEKDAY_FULL.map((w, i) => `<option value="${i}">${w}</option>`).join("")}</select>
-          </div>
-          <div class="field"><label>С</label><input type="time" id="fs-start" value="16:00" /></div>
-          <div class="field"><label>До</label><input type="time" id="fs-end" value="18:00" /></div>
-        </div>
-        <button class="btn btn-secondary" style="width:100%" onclick="addFreeSlot()">Добавить окно</button>
+        <div class="small muted" style="margin-top:10px">Свободные окна теперь создаются прямо в Расписании — нажмите на пустую ячейку в календаре.</div>
       `;
     }
     const np = state.profile.notifyPrefs || {};
     openModal(`
       <div class="modal-header"><h2>Настройки</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
       ${bioSection}
-      ${freeSlotsSection}
       <div class="card-title section-gap">Уведомления</div>
       <div class="toggle-row">
         <span class="label">Напоминания о занятиях</span>
@@ -1068,8 +1094,9 @@
         <span class="label">О переносах и отменах</span>
         <button class="switch ${np.reschedule ? "on" : ""}" id="notif-reschedule" onclick="this.classList.toggle('on')"></button>
       </div>
-      <div class="small muted" style="margin-top:6px">Уведомления о переносах/отменах уже приходят по факту события (колокольчик вверху). Регулярные напоминания «занятие скоро» и «пора оплатить» — по расписанию, а не по событию — появятся отдельно, это переключатель для них заранее.</div>
-      <button class="btn btn-primary" style="margin-top:14px" onclick="saveNotifyPrefs()">Сохранить настройки</button>
+      <div class="small muted" style="margin-top:6px">Уведомления о переносах/отменах приходят по факту события. Регулярные напоминания «занятие скоро» и «пора оплатить» — по расписанию — появятся отдельно.</div>
+      <button class="btn btn-secondary" style="width:100%;margin-top:10px" onclick="enablePushNotifications()">🔔 Включить уведомления на устройство</button>
+      <button class="btn btn-primary" style="margin-top:10px" onclick="saveNotifyPrefs()">Сохранить настройки</button>
 
       <div class="card-title section-gap" style="color:var(--danger)">Опасная зона</div>
       <div class="small muted" style="margin-bottom:10px">
@@ -1136,6 +1163,48 @@
     if (!ok) { showToast("Не удалось сохранить"); return; }
     showToast("Настройки сохранены");
     closeModal();
+  };
+
+  /* ---------------------------------------------------------
+     PUSH-УВЕДОМЛЕНИЯ НА УСТРОЙСТВО
+  --------------------------------------------------------- */
+  const VAPID_PUBLIC_KEY = "BGobfLG7d2oRaA44A_P02FT_mh9eR1T1EfKZJZgFFR2NWCQURHnRIRu0jANE3iCk4Nh6RAXmYdv8LHhFVoXVhN0";
+
+  function urlBase64ToUint8Array(base64String) {
+    const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+    const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+    const raw = atob(base64);
+    return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+  }
+
+  window.enablePushNotifications = async function () {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+      showToast("Этот браузер не поддерживает push-уведомления");
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") { showToast("Разрешение не выдано"); return; }
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+        });
+      }
+      const json = sub.toJSON();
+      const { error } = await sbClient.from("push_subscriptions").upsert({
+        user_id: state.session.user.id, endpoint: json.endpoint,
+        p256dh: json.keys.p256dh, auth: json.keys.auth,
+      }, { onConflict: "endpoint" });
+      if (error) { console.error(error); showToast("Не удалось сохранить подписку"); return; }
+      showToast("Уведомления на устройство включены");
+      closeModal();
+    } catch (e) {
+      console.error(e);
+      showToast("Не удалось подключить уведомления");
+    }
   };
 
   /* ---------------------------------------------------------
@@ -1285,6 +1354,127 @@
   /* ---------------------------------------------------------
      SCHEDULE VIEW
   --------------------------------------------------------- */
+  const HOUR_PX = 52;
+
+  function dayColumnHoursHTML(dateISO, withLabels) {
+    const lessons = lessonsOnDate(dateISO);
+    const weekday = (dateFromISO(dateISO).getDay() + 6) % 7;
+    const slots = state.freeSlots.filter((s) => s.weekday === weekday);
+
+    const freeBlocks = slots.map((s) => {
+      const [sh, sm] = s.start_time.slice(0, 5).split(":").map(Number);
+      const [eh, em] = s.end_time.slice(0, 5).split(":").map(Number);
+      const top = ((sh * 60 + sm) / 60) * HOUR_PX;
+      const height = Math.max(18, (((eh * 60 + em) - (sh * 60 + sm)) / 60) * HOUR_PX);
+      return `<div class="day-freeslot-block" style="top:${top}px;height:${height}px" onclick="event.stopPropagation(); confirmDeleteFreeSlot('${s.id}')" title="Свободное окно — нажмите, чтобы удалить"></div>`;
+    }).join("");
+
+    const lessonBlocks = lessons.map((l) => {
+      const [h, m] = l.time.split(":").map(Number);
+      const top = ((h * 60 + m) / 60) * HOUR_PX;
+      const height = Math.max(20, ((l.duration || 60) / 60) * HOUR_PX - 2);
+      const cls = l.status === "done" ? "status-done" : l.status === "cancelled" ? "status-cancelled" : l.status === "moved" ? "status-moved" : "";
+      const st = getStudent(l.studentId);
+      return `<div class="day-lesson-block ${cls}" style="top:${top}px;height:${height}px" onclick="event.stopPropagation(); openEditLesson('${l.id}')">
+        <div class="t">${l.time}</div><div class="w">${escapeHTML(st?.name || "Ученик")}</div>
+      </div>`;
+    }).join("");
+
+    const nowLine = isToday(dateISO) ? (() => {
+      const now = new Date();
+      const top = ((now.getHours() * 60 + now.getMinutes()) / 60) * HOUR_PX;
+      return `<div class="day-now-line" style="top:${top}px"></div>`;
+    })() : "";
+
+    const hourRows = Array.from({ length: 24 }, (_, h) =>
+      `<div class="day-hour-row">${withLabels ? `<span class="day-hour-label">${pad(h)}:00</span>` : ""}</div>`
+    ).join("");
+
+    return `<div class="day-hours-area" style="height:${24 * HOUR_PX}px" onclick="handleDayGridClick(event,'${dateISO}')">
+      ${hourRows}${freeBlocks}${lessonBlocks}${nowLine}
+    </div>`;
+  }
+
+  window.handleDayGridClick = function (evt, dateISO) {
+    const rect = evt.currentTarget.getBoundingClientRect();
+    const y = evt.clientY - rect.top;
+    let totalMinutes = Math.round((y / HOUR_PX) * 60 / 15) * 15;
+    totalMinutes = Math.max(0, Math.min(23 * 60 + 45, totalMinutes));
+    const time = `${pad(Math.floor(totalMinutes / 60))}:${pad(totalMinutes % 60)}`;
+    openQuickCreateSheet(dateISO, time);
+  };
+
+  window.confirmDeleteFreeSlot = async function (id) {
+    if (!confirm("Удалить это свободное окно?")) return;
+    const ok = await dbDeleteFreeSlot(id);
+    if (!ok) return;
+    state.freeSlots = state.freeSlots.filter((s) => s.id !== id);
+    showToast("Окно удалено");
+    render();
+  };
+
+  window.openQuickCreateSheet = function (dateISO, time) {
+    openModal(`
+      <div class="modal-header"><h2>${humanDate(dateISO)}, ${time}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+      <button class="btn btn-primary" style="width:100%;margin-bottom:8px" onclick="openQuickLessonForm('${dateISO}','${time}')">➕ Создать занятие</button>
+      <button class="btn btn-secondary" style="width:100%" onclick="quickCreateFreeSlot('${dateISO}','${time}')">🟢 Отметить как свободное окно</button>
+    `);
+  };
+
+  window.openQuickLessonForm = function (dateISO, time) {
+    if (!state.students.length) { showToast("Сначала добавьте ученика"); return; }
+    const studentOptions = state.students.filter((s) => s.status === "active").map((s) => `<option value="${s.id}">${escapeHTML(s.name)}</option>`).join("");
+    openModal(`
+      <div class="modal-header"><h2>Новое занятие</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+      <div class="small muted" style="margin-bottom:10px">${humanDate(dateISO)}, начало ${time}</div>
+      <div class="field"><label>Ученик</label><select id="q-student">${studentOptions}</select></div>
+      <div class="field"><label>Продолжительность</label>
+        <div class="chip-row" id="q-duration-chips">
+          ${[30, 45, 60, 90, 120].map((m) => `<button type="button" class="chip ${m === 60 ? "active" : ""}" data-min="${m}" onclick="pickDurationChip(this,'q-duration-chips','q-duration')">${m} мин</button>`).join("")}
+        </div>
+        <input type="number" id="q-duration" value="60" min="10" step="5" style="margin-top:8px" />
+      </div>
+      <button class="btn btn-primary" style="width:100%" onclick="quickCreateLesson('${dateISO}','${time}')">Создать</button>
+    `);
+  };
+
+  window.quickCreateLesson = async function (dateISO, time) {
+    const studentId = document.getElementById("q-student").value;
+    const duration = Number(document.getElementById("q-duration").value) || 60;
+    const student = getStudent(studentId);
+    if (!student) { showToast("Выберите ученика"); return; }
+    const conflict = findLessonConflict(dateISO, time, duration, null);
+    if (conflict) {
+      const cst = getStudent(conflict.studentId);
+      if (!confirm(`Пересекается с занятием ${conflict.time} (${cst?.name || "ученик"}). Создать всё равно?`)) return;
+    }
+    await withGuard("quickCreateLesson", async () => {
+      const created = await dbInsertLesson({
+        studentId, date: dateISO, time, duration, price: student.price,
+        status: "planned", paid: false, hwDone: false, homework: "", comment: "",
+      });
+      if (!created) return;
+      state.lessons.push(created);
+      closeModal();
+      showToast("Занятие создано");
+      render();
+    });
+  };
+
+  window.quickCreateFreeSlot = async function (dateISO, time) {
+    const weekday = (dateFromISO(dateISO).getDay() + 6) % 7;
+    const [h, m] = time.split(":").map(Number);
+    const endH = Math.min(h + 2, 23);
+    const endTime = `${pad(endH)}:${pad(m)}`;
+    const created = await dbInsertFreeSlot(weekday, time, endTime);
+    if (!created) return;
+    state.freeSlots.push(created);
+    state.freeSlots.sort((a, b) => a.weekday - b.weekday);
+    closeModal();
+    showToast(`Окно добавлено на ${WEEKDAY_FULL[weekday].toLowerCase()}`);
+    render();
+  };
+
   function renderSchedule() {
     ensureScheduleInit();
     const ws = state.schedule.weekStart;
@@ -1343,20 +1533,28 @@
 
     let body = "";
     if (mode === "day") {
-      const list = lessonsOnDate(sel);
       body = `
         <div class="day-group-title">${weekdayFull(sel)}, ${humanDate(sel)}</div>
-        ${list.length === 0 ? emptyBlock("🗓️", "Занятий нет", "Нажмите «+ Занятие», чтобы добавить") :
-        list.map((l) => scheduleLessonRow(l)).join("")}
+        <div class="day-timeline-wrap">
+          ${dayColumnHoursHTML(sel, true)}
+        </div>
       `;
     } else {
-      body = days.map((d) => {
-        const list = lessonsOnDate(d);
-        if (list.length === 0) return "";
-        return `<div class="day-group-title">${weekdayFull(d)}${isToday(d) ? " · сегодня" : ""}</div>
-          ${list.map((l) => scheduleLessonRow(l)).join("")}`;
-      }).join("");
-      if (!body.trim()) body = emptyBlock("🗓️", "На этой неделе занятий нет", "Нажмите «+ Занятие», чтобы добавить");
+      body = `
+        <div class="week-grid-wrap">
+          <div class="week-grid-scroll">
+            <div class="week-hours-col">
+              ${Array.from({ length: 24 }, (_, h) => `<div class="day-hour-row"><span class="day-hour-label">${pad(h)}:00</span></div>`).join("")}
+            </div>
+            ${days.map((d) => `
+              <div class="week-day-col">
+                <div class="week-day-col-header ${isToday(d) ? "today" : ""}">${weekdayShort(d)} ${dateFromISO(d).getDate()}</div>
+                ${dayColumnHoursHTML(d, false)}
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      `;
     }
 
     return `${weekStrip}${modeToggle}${body}`;
@@ -1474,8 +1672,11 @@
         </div>` : ""}
         ${st.comment ? `<div class="small muted section-gap">💬 ${escapeHTML(st.comment)}</div>` : ""}
         ${st.parentCode ? `<div class="section-gap" style="background:var(--accent-soft);border-radius:var(--radius-md);padding:10px 12px">
-          <div class="small" style="font-weight:600;color:var(--accent-ink)">Код для родителя: ${escapeHTML(st.parentCode)}</div>
-          <div class="small muted" style="margin-top:2px">Передайте его родителю — он сможет зарегистрироваться и видеть расписание и оплаты этого ученика</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+            <div class="small" style="font-weight:600;color:var(--accent-ink)">Код: ${escapeHTML(st.parentCode)}</div>
+            <button class="btn-ghost" style="padding:4px 10px;background:rgba(255,255,255,0.6);border-radius:999px;font-size:12px" onclick="copyInviteCode('${escapeHTML(st.parentCode)}')">Скопировать</button>
+          </div>
+          <div class="small muted" style="margin-top:2px">Передайте его родителю или ученику — они смогут зарегистрироваться и получить доступ к этому ученику</div>
         </div>` : ""}
         <div class="btn-row section-gap">
           <button class="btn btn-primary" onclick="openConductLesson('${st.id}')">➕ Провести занятие</button>
@@ -1787,6 +1988,12 @@
         <div class="field"><label>Дата</label><input type="date" id="l-date" value="${lesson?.date || defaultDate || todayISO()}" /></div>
         <div class="field"><label>Время</label><input type="time" id="l-time" value="${lesson?.time || "16:00"}" /></div>
       </div>
+      <div class="field"><label>Продолжительность</label>
+        <div class="chip-row" id="l-duration-chips">
+          ${[30, 45, 60, 90, 120].map((m) => `<button type="button" class="chip ${((lesson?.duration || 60) === m) ? "active" : ""}" data-min="${m}" onclick="pickDurationChip(this)">${m} мин</button>`).join("")}
+        </div>
+        <input type="number" id="l-duration" value="${lesson?.duration || 60}" min="10" step="5" style="margin-top:8px" placeholder="Своя продолжительность, мин" />
+      </div>
       ${isEdit ? `
         <div class="field"><label>Статус</label>
           <select id="l-status">
@@ -1798,6 +2005,8 @@
           <button class="switch ${lesson.paid ? "on" : ""}" id="l-paid-switch" onclick="this.classList.toggle('on')"></button>
         </div>
       ` : ""}
+      <div class="field"><label>Ссылка на доску</label><input type="text" id="l-board-link" value="${escapeHTML(lesson?.boardLink || "")}" placeholder="https://..." /></div>
+      <div class="field"><label>Ссылка на созвон</label><input type="text" id="l-meeting-link" value="${escapeHTML(lesson?.meetingLink || "")}" placeholder="https://..." /></div>
       <div class="field"><label>Домашнее задание</label><textarea id="l-homework" placeholder="Необязательно">${escapeHTML(lesson?.homework || "")}</textarea></div>
       <div class="field">
         <label>Файл к домашнему заданию</label>
@@ -1819,12 +2028,22 @@
     const studentId = document.getElementById("l-student").value;
     const date = document.getElementById("l-date").value;
     const time = document.getElementById("l-time").value;
+    const duration = Number(document.getElementById("l-duration").value) || 60;
+    const boardLink = document.getElementById("l-board-link").value.trim();
+    const meetingLink = document.getElementById("l-meeting-link").value.trim();
     const homework = document.getElementById("l-homework").value.trim();
     const comment = document.getElementById("l-comment").value.trim();
     const student = getStudent(studentId);
     if (!student) { showToast("Выберите ученика"); return; }
     const reportEl = document.getElementById("l-report");
     const hwFile = document.getElementById("l-hw-file")?.files?.[0];
+
+    const conflict = findLessonConflict(date, time, duration, id);
+    if (conflict) {
+      const cst = getStudent(conflict.studentId);
+      const proceed = confirm(`Пересекается с занятием ${conflict.time} (${cst?.name || "ученик"}). Сохранить всё равно?`);
+      if (!proceed) return;
+    }
 
     await withGuard("saveLesson", async () => {
     let homeworkFileUrl;
@@ -1834,7 +2053,8 @@
       const statusEl = document.getElementById("l-status");
       const paidEl = document.getElementById("l-paid-switch");
       const merged = {
-        ...l, studentId, date, time, homework, comment,
+        ...l, studentId, date, time, duration, homework, comment,
+        boardLink, meetingLink,
         status: statusEl ? statusEl.value : l.status,
         paid: paidEl ? paidEl.classList.contains("on") : l.paid,
         homeworkFileUrl: homeworkFileUrl || l.homeworkFileUrl,
@@ -1846,7 +2066,7 @@
       showToast("Занятие обновлено");
     } else {
       const created = await dbInsertLesson({
-        studentId, date, time, homework, comment,
+        studentId, date, time, duration, homework, comment, boardLink, meetingLink,
         status: "planned", paid: false, hwDone: false, price: student.price,
         homeworkFileUrl,
       });
@@ -2198,6 +2418,11 @@
       <span class="badge ${STATUS_BADGE_CLASS[l.status]}">${STATUS_LABEL[l.status]}</span>
       ${l.status === "done" ? `<span class="badge ${l.paid ? "success" : "danger"}" style="margin-left:6px">${l.paid ? "оплачено" : "не оплачено"}</span>` : ""}
 
+      ${(l.boardLink || l.meetingLink) ? `<div class="btn-row section-gap">
+        ${l.boardLink ? `<a class="btn btn-secondary" href="${l.boardLink}" target="_blank">🖊️ Доска</a>` : ""}
+        ${l.meetingLink ? `<a class="btn btn-secondary" href="${l.meetingLink}" target="_blank">🎥 Созвон</a>` : ""}
+      </div>` : ""}
+
       ${l.homework ? `<div class="card-title section-gap">Домашнее задание</div><div class="small">${escapeHTML(l.homework)}</div>` : ""}
       ${l.homeworkFileUrl ? `<div class="small" style="margin-top:6px"><a href="${l.homeworkFileUrl}" target="_blank" style="color:var(--accent-ink);font-weight:600">📎 Открыть файл от репетитора</a></div>` : ""}
 
@@ -2366,6 +2591,11 @@
     openModal(`
       <div class="modal-header"><h2>${humanDate(l.date)} · ${l.time}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
       <span class="badge ${STATUS_BADGE_CLASS[l.status]}">${STATUS_LABEL[l.status]}</span>
+
+      ${(l.boardLink || l.meetingLink) ? `<div class="btn-row section-gap">
+        ${l.boardLink ? `<a class="btn btn-secondary" href="${l.boardLink}" target="_blank">🖊️ Доска</a>` : ""}
+        ${l.meetingLink ? `<a class="btn btn-secondary" href="${l.meetingLink}" target="_blank">🎥 Созвон</a>` : ""}
+      </div>` : ""}
 
       ${l.homework ? `
         <div class="card-title section-gap">Домашнее задание</div>

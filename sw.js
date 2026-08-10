@@ -1,4 +1,4 @@
-const CACHE_NAME = "noschool-crm-v21";
+const CACHE_NAME = "noschool-crm-v22";
 const ASSETS = [
   "./",
   "./index.html",
@@ -45,3 +45,26 @@ self.addEventListener("fetch", (event) => {
     })
   );
 });
+
+self.addEventListener("push", (event) => {
+  let data = { title: "Не школа", body: "Новое уведомление" };
+  try { if (event.data) data = event.data.json(); } catch (e) { /* используем значения по умолчанию */ }
+  event.waitUntil(
+    self.registration.showNotification(data.title || "Не школа", {
+      body: data.body || "",
+      icon: "icons/icon-192.png",
+      badge: "icons/icon-192.png",
+    })
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: "window" }).then((clients) => {
+      if (clients.length > 0) return clients[0].focus();
+      return self.clients.openWindow("./");
+    })
+  );
+});
+
