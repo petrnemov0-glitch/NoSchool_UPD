@@ -429,10 +429,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   border: 1px solid var(--line); border-radius: var(--radius-md);
   background: var(--surface); margin-bottom: 18px;
 }
-.day-hours-area { position: relative; margin-left: 46px; cursor: pointer; }
+.day-hours-area { position: relative; cursor: pointer; }
 .day-hour-row { height: 52px; border-top: 1px solid var(--line); position: relative; }
 .day-hour-label {
-  position: absolute; left: -46px; top: -8px; width: 40px; text-align: right;
+  position: absolute; left: 0; right: 0; top: -8px; text-align: right;
   font-size: 11px; color: var(--muted); font-family: var(--font-mono); padding-right: 6px;
 }
 .day-lesson-block {
@@ -463,7 +463,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .week-grid-scroll { display: flex; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .week-hours-col { flex-shrink: 0; width: 46px; position: sticky; left: 0; background: var(--surface); z-index: 4; }
 .week-day-col { flex-shrink: 0; width: 132px; border-left: 1px solid var(--line); }
-.week-day-col .day-hours-area { margin-left: 0; }
 .week-day-col-header {
   text-align: center; font-size: 12px; font-weight: 700; color: var(--muted);
   padding: 8px 4px; border-bottom: 1px solid var(--line); position: sticky; top: 0;

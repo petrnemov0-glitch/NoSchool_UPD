@@ -1439,27 +1439,41 @@
   --------------------------------------------------------- */
   const HOUR_PX = 52;
 
-  function dayColumnHoursHTML(dateISO, withLabels) {
-    const lessons = lessonsOnDate(dateISO);
+  function hoursLabelColumnHTML() {
+    return `<div class="week-hours-col">
+      ${Array.from({ length: 24 }, (_, h) => `<div class="day-hour-row"><span class="day-hour-label">${pad(h)}:00</span></div>`).join("")}
+    </div>`;
+  }
+
+  // opts: { lessons, freeSlots, readOnly, onLessonClick }
+  // Тутор (по умолчанию): создание по тапу, удаление окна по тапу, открывает редактирование.
+  // Только чтение (родитель/ученик): без создания/удаления, свой обработчик клика по занятию.
+  function dayColumnHoursHTML(dateISO, opts) {
+    opts = opts || {};
+    const readOnly = !!opts.readOnly;
+    const lessonsList = (opts.lessons || state.lessons).filter((l) => l.date === dateISO);
+    const freeSlotsList = opts.freeSlots || state.freeSlots;
+    const onLessonClick = opts.onLessonClick || "openEditLesson";
     const weekday = (dateFromISO(dateISO).getDay() + 6) % 7;
-    const slots = state.freeSlots.filter((s) => s.weekday === weekday);
+    const slots = freeSlotsList.filter((s) => s.weekday === weekday);
 
     const freeBlocks = slots.map((s) => {
       const [sh, sm] = s.start_time.slice(0, 5).split(":").map(Number);
       const [eh, em] = s.end_time.slice(0, 5).split(":").map(Number);
       const top = ((sh * 60 + sm) / 60) * HOUR_PX;
       const height = Math.max(18, (((eh * 60 + em) - (sh * 60 + sm)) / 60) * HOUR_PX);
-      return `<div class="day-freeslot-block" style="top:${top}px;height:${height}px" onclick="event.stopPropagation(); confirmDeleteFreeSlot('${s.id}')" title="Свободное окно — нажмите, чтобы удалить"></div>`;
+      const clickAttr = readOnly ? "" : `onclick="event.stopPropagation(); confirmDeleteFreeSlot('${s.id}')"`;
+      return `<div class="day-freeslot-block" style="top:${top}px;height:${height}px" ${clickAttr} title="Свободное окно${readOnly ? "" : " — нажмите, чтобы удалить"}"></div>`;
     }).join("");
 
-    const lessonBlocks = lessons.map((l) => {
+    const lessonBlocks = lessonsList.map((l) => {
       const [h, m] = l.time.split(":").map(Number);
       const top = ((h * 60 + m) / 60) * HOUR_PX;
       const height = Math.max(20, ((l.duration || 60) / 60) * HOUR_PX - 2);
       const cls = l.status === "done" ? "status-done" : l.status === "cancelled" ? "status-cancelled" : l.status === "moved" ? "status-moved" : "";
-      const st = getStudent(l.studentId);
-      return `<div class="day-lesson-block ${cls}" style="top:${top}px;height:${height}px" onclick="event.stopPropagation(); openEditLesson('${l.id}')">
-        <div class="t">${l.time}</div><div class="w">${escapeHTML(st?.name || "Ученик")}</div>
+      const label = readOnly ? STATUS_LABEL[l.status] : (getStudent(l.studentId)?.name || "Ученик");
+      return `<div class="day-lesson-block ${cls}" style="top:${top}px;height:${height}px" onclick="event.stopPropagation(); ${onLessonClick}('${l.id}')">
+        <div class="t">${l.time}</div><div class="w">${escapeHTML(label)}</div>
       </div>`;
     }).join("");
 
@@ -1469,14 +1483,52 @@
       return `<div class="day-now-line" style="top:${top}px"></div>`;
     })() : "";
 
-    const hourRows = Array.from({ length: 24 }, (_, h) =>
-      `<div class="day-hour-row">${withLabels ? `<span class="day-hour-label">${pad(h)}:00</span>` : ""}</div>`
-    ).join("");
+    const hourRows = Array.from({ length: 24 }, () => `<div class="day-hour-row"></div>`).join("");
+    const clickHandler = readOnly ? "" : `onclick="handleDayGridClick(event,'${dateISO}')"`;
 
-    return `<div class="day-hours-area" style="height:${24 * HOUR_PX}px" onclick="handleDayGridClick(event,'${dateISO}')">
+    return `<div class="day-hours-area" style="height:${24 * HOUR_PX}px" ${clickHandler}>
       ${hourRows}${freeBlocks}${lessonBlocks}${nowLine}
     </div>`;
   }
+
+  // Готовый блок «неделя почасово», переиспользуемый и в расписании
+  // репетитора, и в календарях родителя/ученика (там — только чтение).
+  function weekHourGridHTML(days, opts) {
+    opts = opts || {};
+    const wide = days.length === 1;
+    return `
+      <div class="week-grid-wrap">
+        <div class="week-grid-scroll">
+          ${hoursLabelColumnHTML()}
+          ${days.map((d) => `
+            <div class="week-day-col" ${wide ? 'style="width:100%"' : ""}>
+              ${wide ? "" : `<div class="week-day-col-header ${isToday(d) ? "today" : ""}">${weekdayShort(d)} ${dateFromISO(d).getDate()}</div>`}
+              ${dayColumnHoursHTML(d, opts)}
+            </div>
+          `).join("")}
+        </div>
+      </div>`;
+  }
+
+  // Календарь только для чтения — для кабинетов родителя и ученика.
+  // Своя (отдельная от расписания репетитора) навигация по неделям.
+  function renderReadOnlyWeek(lessons, freeSlots, onLessonClick) {
+    if (!state.schedule.roWeekStart) state.schedule.roWeekStart = startOfWeekISO(todayISO());
+    const ws = state.schedule.roWeekStart;
+    const days = Array.from({ length: 7 }, (_, i) => addDays(ws, i));
+    const nav = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <button class="back" onclick="roWeekShift(-1)">‹</button>
+        <div class="small muted" style="font-weight:600">${humanDate(ws)} – ${humanDate(addDays(ws, 6))}</div>
+        <button class="back" onclick="roWeekShift(1)">›</button>
+      </div>`;
+    return nav + weekHourGridHTML(days, { lessons, freeSlots, readOnly: true, onLessonClick: onLessonClick || "openParentLessonDetail" });
+  }
+  window.roWeekShift = function (dir) {
+    if (!state.schedule.roWeekStart) state.schedule.roWeekStart = startOfWeekISO(todayISO());
+    state.schedule.roWeekStart = addDays(state.schedule.roWeekStart, dir * 7);
+    render();
+  };
 
   window.handleDayGridClick = function (evt, dateISO) {
     const rect = evt.currentTarget.getBoundingClientRect();
@@ -1618,26 +1670,10 @@
     if (mode === "day") {
       body = `
         <div class="day-group-title">${weekdayFull(sel)}, ${humanDate(sel)}</div>
-        <div class="day-timeline-wrap">
-          ${dayColumnHoursHTML(sel, true)}
-        </div>
+        ${weekHourGridHTML([sel])}
       `;
     } else {
-      body = `
-        <div class="week-grid-wrap">
-          <div class="week-grid-scroll">
-            <div class="week-hours-col">
-              ${Array.from({ length: 24 }, (_, h) => `<div class="day-hour-row"><span class="day-hour-label">${pad(h)}:00</span></div>`).join("")}
-            </div>
-            ${days.map((d) => `
-              <div class="week-day-col">
-                <div class="week-day-col-header ${isToday(d) ? "today" : ""}">${weekdayShort(d)} ${dateFromISO(d).getDate()}</div>
-                ${dayColumnHoursHTML(d, false)}
-              </div>
-            `).join("")}
-          </div>
-        </div>
-      `;
+      body = weekHourGridHTML(days);
     }
 
     return `${weekStrip}${modeToggle}${body}`;
@@ -2466,6 +2502,10 @@
             <div class="time" style="background:rgba(0,0,0,0.06)">${upcoming.time}</div>
             <div><div class="who">Ближайшее занятие</div><div class="sub">${humanDate(upcoming.date)}</div></div>
           </div>` : ""}
+
+        <div class="card-title section-gap">Расписание</div>
+        ${renderReadOnlyWeek(lessons, state.freeSlots)}
+
         <div class="card-title section-gap">История занятий</div>
         ${lessons.length === 0 ? `<div class="small muted">Занятий пока нет</div>` : lessons.slice(0, 15).map((l) => `
           <div class="row row-tap" onclick="openParentLessonDetail('${l.id}')">
@@ -2642,6 +2682,9 @@
           <div class="hero-label">Ближайшее занятие</div>
           <div class="hero-amount" style="font-size:26px">${humanDate(upcoming.date)}, ${upcoming.time}</div>
         </div>` : `<div class="card"><div class="small muted" style="padding:6px 0">Ближайших занятий не запланировано</div></div>`}
+
+      <div class="card-title section-gap">Расписание</div>
+      ${renderReadOnlyWeek(lessons, state.freeSlots, "openStudentHomeworkDetail")}
 
       <div class="card-title section-gap">Домашние задания</div>
       <div class="card" style="padding:6px 12px">
